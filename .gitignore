@@ -1,0 +1,11 @@
+.env
+node_modules/
+__pycache__/
+.next/
+*.pyc
+postgres_data/
+
+# Wasm build artifacts — собираются в CI, не коммитим
+wasm/pkg/
+frontend/wasm/pkg/
+wasm/target/

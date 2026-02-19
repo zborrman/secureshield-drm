@@ -1,5 +1,12 @@
 .env
 node_modules/
+
+# Editor & Claude Code service files
+.vscode/
+.clauderules
+Hook.md
+Rule.md
+Skill.md
 __pycache__/
 .next/
 *.pyc

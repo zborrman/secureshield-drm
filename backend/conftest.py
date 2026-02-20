@@ -1,10 +1,31 @@
 import os
+import base64
 import pytest
 import pytest_asyncio
 import asyncio
 
+# Use in-memory SQLite for tests — no PostgreSQL required locally.
+# Must be set BEFORE database.py / main.py are imported.
+os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./test_drm.db")
+
 # Must be set BEFORE main.py is imported — ADMIN_API_KEY is read at module level
 os.environ.setdefault("ADMIN_API_KEY", "test-admin-key")
+# PyJWT ≥ 2.9 requires HMAC keys ≥ 32 bytes for HS256 — set an explicit secret
+# so the default derivation (ADMIN_API_KEY + "-offline-v1" = 25 bytes) is not used.
+os.environ.setdefault("OFFLINE_TOKEN_SECRET", "test-offline-secret-for-jwt-hs256!")
+
+# Vault / S3 settings — set before any vault_service import
+os.environ.setdefault(
+    "VAULT_MASTER_KEY",
+    base64.urlsafe_b64encode(b"test_vault_32byte_key_for_tests!").decode(),
+)
+os.environ.setdefault("S3_BUCKET", "test-secureshield-vault")
+os.environ.setdefault("AWS_ACCESS_KEY_ID", "test")
+os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
+os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+
+import fakeredis
+import redis_service as _redis_service
 
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -28,6 +49,20 @@ async def _get_test_db():
 
 # Override FastAPI's get_db dependency for ALL tests
 app.dependency_overrides[get_db] = _get_test_db
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def fake_redis():
+    """
+    Replace the module-level Redis singleton with an in-memory FakeAsyncRedis
+    before every test, then tear it down after.  autouse=True means every test
+    automatically gets a clean Redis state without needing to request the fixture.
+    """
+    r = fakeredis.FakeAsyncRedis(decode_responses=True)
+    _redis_service._redis = r
+    yield r
+    await r.aclose()
+    _redis_service._redis = None
 
 
 @pytest.fixture(scope="session")
@@ -59,3 +94,25 @@ async def admin_client():
     headers = {"X-Admin-Key": os.environ["ADMIN_API_KEY"]}
     async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as ac:
         yield ac
+
+
+@pytest.fixture
+def mock_s3():
+    """
+    Spin up an in-process moto S3 mock for vault tests.
+
+    NOT autouse — only vault tests request this fixture explicitly.
+    The fixture resets vault_service._s3 before and after so the lazy
+    singleton is re-created inside the mock context each time.
+    """
+    from moto import mock_aws
+    import boto3
+    import vault_service
+
+    with mock_aws():
+        vault_service._s3 = None  # force re-init inside mock context
+        boto3.client("s3", region_name="us-east-1").create_bucket(
+            Bucket=vault_service.S3_BUCKET
+        )
+        yield
+        vault_service._s3 = None  # teardown — next test gets a fresh client

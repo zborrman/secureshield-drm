@@ -16,3 +16,11 @@ postgres_data/
 wasm/pkg/
 frontend/wasm/pkg/
 wasm/target/
+
+# Test artifacts
+backend/test_drm.db
+backend/test_output.txt
+*.db
+
+# TypeScript incremental build info
+frontend/tsconfig.tsbuildinfo

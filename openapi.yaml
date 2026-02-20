@@ -1,0 +1,1081 @@
+openapi: 3.1.0
+
+info:
+  title: SecureShield DRM API
+  version: "1.0.0"
+  description: |
+    Digital Rights Management backend for SecureShield.
+
+    ## Authentication
+    Admin endpoints require the `X-Admin-Key` header.
+    Public endpoints (verify-license, analytics, offline-token verification) require no header.
+
+    ## Base URL
+    Development: `http://localhost:8001`
+
+servers:
+  - url: http://localhost:8001
+    description: Local development
+
+tags:
+  - name: health
+    description: Service health
+  - name: license
+    description: License verification (public)
+  - name: analytics
+    description: Viewing session tracking (public)
+  - name: offline
+    description: Zero-knowledge offline token verification (public)
+  - name: payment
+    description: Stripe checkout integration (public)
+  - name: admin-licenses
+    description: License management — requires X-Admin-Key
+  - name: admin-analytics
+    description: Analytics management — requires X-Admin-Key
+  - name: admin-audit
+    description: Audit log and alerts — requires X-Admin-Key
+  - name: admin-geo
+    description: Geofencing management — requires X-Admin-Key
+  - name: admin-leak
+    description: Proof-of-Leak evidence — requires X-Admin-Key
+  - name: admin-offline
+    description: Offline token management — requires X-Admin-Key
+  - name: vault
+    description: Content Vault — encrypted S3 streaming (public, requires valid license key)
+  - name: admin-vault
+    description: Content Vault management — requires X-Admin-Key
+
+# ── Security Scheme ──────────────────────────────────────────────────────────
+components:
+  securitySchemes:
+    AdminKey:
+      type: apiKey
+      in: header
+      name: X-Admin-Key
+      description: Static admin API key. Set via `ADMIN_API_KEY` environment variable.
+
+  schemas:
+
+    # ── Shared primitives ───────────────────────────────────────────────────
+    InvoiceId:
+      type: string
+      example: "INV-2026-001"
+
+    IsoTimestamp:
+      type: string
+      format: date-time
+      example: "2026-02-20T14:30:00Z"
+
+    CountryCodes:
+      type: string
+      description: Comma-separated ISO 3166-1 alpha-2 codes, e.g. `US,GB,DE`. Empty = unrestricted.
+      example: "US,GB,DE"
+
+    # ── Domain objects ──────────────────────────────────────────────────────
+    License:
+      type: object
+      properties:
+        id:           { type: integer, example: 1 }
+        invoice_id:   { $ref: "#/components/schemas/InvoiceId" }
+        license_key:  { type: string, description: "bcrypt hash — never the plain key", example: "$2b$12$abc..." }
+        is_paid:      { type: boolean, example: false }
+        owner_id:     { type: string, example: "alice" }
+        max_sessions: { type: integer, example: 1 }
+        allowed_countries:
+          type: string
+          nullable: true
+          example: "US,GB"
+
+    AuditLog:
+      type: object
+      properties:
+        id:         { type: integer }
+        timestamp:  { $ref: "#/components/schemas/IsoTimestamp" }
+        invoice_id: { $ref: "#/components/schemas/InvoiceId" }
+        ip_address: { type: string, example: "203.0.113.42" }
+        is_success: { type: boolean }
+        user_agent: { type: string, example: "Mozilla/5.0 ..." }
+
+    ViewSession:
+      type: object
+      properties:
+        id:               { type: integer }
+        license_id:       { type: integer }
+        content_id:       { type: string, example: "main" }
+        start_time:       { $ref: "#/components/schemas/IsoTimestamp" }
+        last_heartbeat:   { $ref: "#/components/schemas/IsoTimestamp" }
+        duration_seconds: { type: integer, example: 300 }
+        device_info:      { type: string, example: "Mozilla/5.0 ..." }
+        ip_address:       { type: string, example: "203.0.113.42" }
+        is_bot_suspect:   { type: boolean, example: false }
+
+    LeakReportSummary:
+      type: object
+      properties:
+        report_id:             { type: string, format: uuid }
+        generated_at:          { $ref: "#/components/schemas/IsoTimestamp" }
+        invoice_id:            { $ref: "#/components/schemas/InvoiceId" }
+        submitted_fingerprint: { type: string, example: "3735928559" }
+
+    LeakReport:
+      allOf:
+        - $ref: "#/components/schemas/LeakReportSummary"
+        - type: object
+          properties:
+            system:       { type: string, example: "SecureShield DRM" }
+            resolution:
+              type: object
+              properties:
+                method:     { type: string, enum: [direct_invoice_id, fingerprint_match] }
+                invoice_id: { $ref: "#/components/schemas/InvoiceId" }
+                owner_id:   { type: string }
+                fingerprint:{ type: string }
+            license:
+              type: object
+              properties:
+                invoice_id:       { $ref: "#/components/schemas/InvoiceId" }
+                owner_id:         { type: string }
+                is_paid:          { type: boolean }
+                max_sessions:     { type: integer }
+                allowed_countries:{ type: string, nullable: true }
+            viewing_sessions:
+              type: array
+              items:
+                type: object
+                properties:
+                  session_id:       { type: integer }
+                  content_id:       { type: string }
+                  start_time:       { $ref: "#/components/schemas/IsoTimestamp" }
+                  last_heartbeat:   { $ref: "#/components/schemas/IsoTimestamp" }
+                  duration_seconds: { type: integer }
+                  ip_address:       { type: string }
+                  device_info:      { type: string }
+                  is_bot_suspect:   { type: boolean }
+            audit_trail:
+              type: array
+              items:
+                type: object
+                properties:
+                  timestamp:  { $ref: "#/components/schemas/IsoTimestamp" }
+                  ip_address: { type: string }
+                  is_success: { type: boolean }
+                  user_agent: { type: string }
+            summary:
+              type: object
+              properties:
+                total_sessions:          { type: integer }
+                bot_suspected_sessions:  { type: integer }
+                unique_ips:              { type: array, items: { type: string } }
+                total_audit_events:      { type: integer }
+                failed_verifications:    { type: integer }
+                first_activity:          { $ref: "#/components/schemas/IsoTimestamp" }
+                last_activity:           { $ref: "#/components/schemas/IsoTimestamp" }
+            integrity_hash:
+              type: string
+              description: "sha256:<hex> of the canonical evidence_json blob"
+              example: "sha256:a3f4b2c1..."
+
+    OfflineTokenRow:
+      type: object
+      properties:
+        token_id:         { type: string, format: uuid }
+        invoice_id:       { $ref: "#/components/schemas/InvoiceId" }
+        issued_at:        { $ref: "#/components/schemas/IsoTimestamp" }
+        valid_until:      { $ref: "#/components/schemas/IsoTimestamp" }
+        max_offline_hours:{ type: integer, example: 24 }
+        device_hint:      { type: string, nullable: true, example: "Alice Laptop" }
+        is_revoked:       { type: boolean }
+        is_expired:       { type: boolean }
+        hours_remaining:  { type: integer, example: 22 }
+
+    Error:
+      type: object
+      properties:
+        detail: { type: string }
+
+    VaultItem:
+      type: object
+      description: Metadata for a single Content Vault entry (no encryption keys or S3 paths)
+      properties:
+        content_id:   { type: string, format: uuid }
+        filename:     { type: string, example: "report-q1.pdf" }
+        content_type: { type: string, example: "application/pdf" }
+        size_bytes:   { type: integer, example: 204800 }
+        description:  { type: string, nullable: true, example: "Q1 earnings report" }
+        uploaded_at:  { $ref: "#/components/schemas/IsoTimestamp" }
+
+    VaultUploadResponse:
+      type: object
+      properties:
+        content_id:   { type: string, format: uuid }
+        filename:     { type: string }
+        size_bytes:   { type: integer }
+        content_type: { type: string }
+        uploaded_at:  { $ref: "#/components/schemas/IsoTimestamp" }
+
+    VaultAccessResponse:
+      type: object
+      properties:
+        access_token:       { type: string, description: "Short-lived JWT for GET /vault/stream/{token}" }
+        session_id:         { type: integer }
+        expires_in_seconds: { type: integer, example: 300 }
+        filename:           { type: string }
+        content_type:       { type: string }
+        size_bytes:         { type: integer }
+
+# ── Endpoints ────────────────────────────────────────────────────────────────
+paths:
+
+  # ── Health ──────────────────────────────────────────────────────────────
+  /health:
+    get:
+      tags: [health]
+      summary: Service health check
+      operationId: healthCheck
+      responses:
+        "200":
+          description: Service and database are reachable
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:   { type: string, example: healthy }
+                  database: { type: string, example: connected }
+        "503":
+          description: Database unreachable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ── License Verification ─────────────────────────────────────────────────
+  /verify-license:
+    post:
+      tags: [license]
+      summary: Verify a license key against an invoice
+      operationId: verifyLicense
+      description: |
+        Validates `input_key` against the bcrypt hash stored for `invoice_id`.
+        Also enforces:
+        - Brute-force block (≥5 failed attempts from same IP → 429)
+        - Geofence (403 if caller's country is not in `allowed_countries`)
+
+        On success returns the watermark fingerprint to embed in rendered content.
+      parameters:
+        - name: invoice_id
+          in: query
+          required: true
+          schema: { $ref: "#/components/schemas/InvoiceId" }
+        - name: input_key
+          in: query
+          required: true
+          schema: { type: string, example: "SK-abcdefghij1234" }
+      responses:
+        "200":
+          description: Key is valid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:      { type: string, example: success }
+                  fingerprint: { type: integer, description: "int32 watermark to embed in content", example: 3735928559 }
+        "403":
+          description: Invalid key or region blocked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: Too many failed attempts from this IP
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ── Analytics ────────────────────────────────────────────────────────────
+  /analytics/start:
+    post:
+      tags: [analytics]
+      summary: Open a viewing session
+      operationId: analyticsStart
+      description: |
+        Called once when the user successfully unlocks content.
+        Enforces:
+        - Geofence on the viewer's IP
+        - Concurrent session limit (`max_sessions` per license — 409 if at limit)
+
+        Returns a `session_id` that the client must use for subsequent heartbeats.
+      parameters:
+        - name: invoice_id
+          in: query
+          required: true
+          schema: { $ref: "#/components/schemas/InvoiceId" }
+        - name: content_id
+          in: query
+          required: true
+          schema: { type: string, example: "main" }
+      responses:
+        "201":
+          description: Session created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_id: { type: integer, example: 42 }
+        "403":
+          description: Geofence blocked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: License not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Concurrent session limit reached
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /analytics/heartbeat/{session_id}:
+    post:
+      tags: [analytics]
+      summary: Send a viewing heartbeat
+      operationId: analyticsHeartbeat
+      description: |
+        Called every 30 seconds by the viewer to accumulate `duration_seconds`.
+        On the **first** heartbeat, if the call arrives within 500 ms of session
+        start, the session is flagged as `is_bot_suspect = true`.
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Heartbeat accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  duration_seconds: { type: integer, example: 30 }
+                  suspicious:       { type: boolean, example: false }
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ── Offline Token Verification ───────────────────────────────────────────
+  /verify-offline-token:
+    post:
+      tags: [offline]
+      summary: Verify an offline JWT (signature + revocation)
+      operationId: verifyOfflineToken
+      description: |
+        Online counterpart to the client-side expiry check.
+        Validates HS256 signature, JWT expiry, and checks the server-side
+        revocation flag. Call this when connectivity is restored to confirm
+        the token has not been revoked since it was issued.
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema: { type: string, description: "HS256-signed JWT issued by /admin/offline-token" }
+      responses:
+        "200":
+          description: Verification result (always 200 — check `valid` field)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    description: Token is valid
+                    properties:
+                      valid:          { type: boolean, example: true }
+                      invoice_id:     { $ref: "#/components/schemas/InvoiceId" }
+                      hours_remaining:{ type: integer, example: 22 }
+                      device_hint:    { type: string, nullable: true }
+                  - type: object
+                    description: Token is invalid
+                    properties:
+                      valid:  { type: boolean, example: false }
+                      reason:
+                        type: string
+                        enum: [expired, invalid_signature, wrong_token_type, token_not_found, revoked]
+
+  # ── Payment ──────────────────────────────────────────────────────────────
+  /create-checkout-session:
+    post:
+      tags: [payment]
+      summary: Create a Stripe Checkout session
+      operationId: createCheckoutSession
+      description: Returns a redirect URL to the Stripe-hosted payment page for the given invoice.
+      parameters:
+        - name: invoice_id
+          in: query
+          required: true
+          schema: { $ref: "#/components/schemas/InvoiceId" }
+      responses:
+        "200":
+          description: Checkout URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url: { type: string, format: uri, example: "https://checkout.stripe.com/pay/cs_test_..." }
+        "400":
+          description: Stripe error
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /webhook/stripe:
+    post:
+      tags: [payment]
+      summary: Stripe webhook receiver
+      operationId: stripeWebhook
+      description: |
+        Receives `checkout.session.completed` events from Stripe and sets
+        `is_paid = true` on the matching license. Validates the Stripe
+        webhook signature before processing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Raw Stripe event payload
+      responses:
+        "200":
+          description: Event processed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: success }
+
+  /signout:
+    post:
+      tags: [license]
+      summary: Log a sign-out event
+      operationId: signout
+      description: Writes a `SIGNOUT` entry to the audit log. Does not invalidate the license key.
+      parameters:
+        - name: invoice_id
+          in: query
+          required: true
+          schema: { $ref: "#/components/schemas/InvoiceId" }
+      responses:
+        "200":
+          description: Sign-out logged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: signed_out }
+
+  # ── Admin — Licenses ─────────────────────────────────────────────────────
+  /admin/create-license:
+    post:
+      tags: [admin-licenses]
+      summary: Generate a new license
+      operationId: createLicense
+      security:
+        - AdminKey: []
+      description: |
+        Generates a cryptographically random key (`SK-<22 chars>`), stores only
+        its bcrypt hash, and returns the plaintext key **once**. The plaintext
+        is never stored and cannot be recovered.
+      parameters:
+        - name: invoice_id
+          in: query
+          required: true
+          schema: { $ref: "#/components/schemas/InvoiceId" }
+        - name: owner_id
+          in: query
+          required: true
+          schema: { type: string, example: "alice" }
+        - name: max_sessions
+          in: query
+          required: false
+          schema: { type: integer, default: 1, minimum: 1 }
+        - name: allowed_countries
+          in: query
+          required: false
+          schema: { $ref: "#/components/schemas/CountryCodes" }
+      responses:
+        "201":
+          description: License created — copy the plain key now
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invoice_id:       { $ref: "#/components/schemas/InvoiceId" }
+                  plain_key_to_copy:{ type: string, example: "SK-Xk3mNpQr7sTuVwYz" }
+                  warning:          { type: string }
+        "401":
+          description: Missing or invalid admin key
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /admin/licenses:
+    get:
+      tags: [admin-licenses]
+      summary: List all licenses
+      operationId: listLicenses
+      security:
+        - AdminKey: []
+      responses:
+        "200":
+          description: Array of license records (hashed keys, no plaintext)
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/License" }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /admin/licenses/{invoice_id}/geo:
+    patch:
+      tags: [admin-geo]
+      summary: Update or clear a geofence
+      operationId: updateGeo
+      security:
+        - AdminKey: []
+      description: Pass an empty string to `allowed_countries` to remove all restrictions.
+      parameters:
+        - name: invoice_id
+          in: path
+          required: true
+          schema: { $ref: "#/components/schemas/InvoiceId" }
+        - name: allowed_countries
+          in: query
+          required: false
+          schema: { $ref: "#/components/schemas/CountryCodes" }
+      responses:
+        "200":
+          description: Geofence updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invoice_id:       { $ref: "#/components/schemas/InvoiceId" }
+                  allowed_countries:{ type: string, nullable: true }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: License not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  # ── Admin — Analytics ────────────────────────────────────────────────────
+  /admin/analytics:
+    get:
+      tags: [admin-analytics]
+      summary: List all viewing sessions
+      operationId: getAnalytics
+      security:
+        - AdminKey: []
+      responses:
+        "200":
+          description: Sessions ordered by most recent start
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ViewSession" }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /admin/analytics/{session_id}:
+    delete:
+      tags: [admin-analytics]
+      summary: Revoke a viewing session
+      operationId: revokeSession
+      security:
+        - AdminKey: []
+      description: Deletes the session row, immediately freeing the concurrent-session slot for the license.
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Session revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:     { type: string, example: revoked }
+                  session_id: { type: integer }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: Session not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  # ── Admin — Audit ────────────────────────────────────────────────────────
+  /admin/audit-log:
+    get:
+      tags: [admin-audit]
+      summary: Fetch the last 100 audit entries
+      operationId: getAuditLog
+      security:
+        - AdminKey: []
+      responses:
+        "200":
+          description: Audit entries ordered by most recent
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AuditLog" }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /admin/alerts:
+    get:
+      tags: [admin-audit]
+      summary: Recent failed verification attempts (last 30 min)
+      operationId: getAlerts
+      security:
+        - AdminKey: []
+      responses:
+        "200":
+          description: Failed audit entries from the last 30 minutes
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AuditLog" }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  # ── Admin — Proof of Leak ────────────────────────────────────────────────
+  /admin/proof-of-leak:
+    post:
+      tags: [admin-leak]
+      summary: Generate a tamper-evident evidence report
+      operationId: generateLeakProof
+      security:
+        - AdminKey: []
+      description: |
+        Identifies the leaking licensee either by `invoice_id` (direct) or by
+        a watermark `fingerprint` integer extracted from leaked content (reverse
+        lookup via `generate_user_fingerprint(owner_id)`).
+
+        The returned report is sealed with `sha256:` + SHA-256 of the canonical
+        JSON (`sort_keys=True`). The seal is stored separately in the DB so it
+        can be independently verified.
+      parameters:
+        - name: invoice_id
+          in: query
+          required: false
+          schema: { $ref: "#/components/schemas/InvoiceId" }
+          description: Provide either this or `fingerprint`
+        - name: fingerprint
+          in: query
+          required: false
+          schema: { type: string, example: "3735928559" }
+          description: Watermark fingerprint integer extracted from leaked content
+      responses:
+        "201":
+          description: Evidence report created and sealed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LeakReport" }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: No license found for the given identifier, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "422": { description: Neither invoice_id nor fingerprint provided, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+    get:
+      tags: [admin-leak]
+      summary: List past evidence reports (summaries)
+      operationId: listLeakReports
+      security:
+        - AdminKey: []
+      responses:
+        "200":
+          description: Report summaries ordered by most recent
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/LeakReportSummary" }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /admin/proof-of-leak/{report_id}:
+    get:
+      tags: [admin-leak]
+      summary: Retrieve a full evidence report
+      operationId: getLeakReport
+      security:
+        - AdminKey: []
+      parameters:
+        - name: report_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Full report with integrity seal
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LeakReport" }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: Report not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  # ── Admin — Offline Tokens ───────────────────────────────────────────────
+  /admin/offline-token:
+    post:
+      tags: [admin-offline]
+      summary: Issue an offline viewing token
+      operationId: issueOfflineToken
+      security:
+        - AdminKey: []
+      description: |
+        Signs an HS256 JWT with claims `sub=invoice_id`, `jti=<uuid>`, `exp`,
+        `type="offline"`. The signing secret (`OFFLINE_TOKEN_SECRET`) never
+        leaves the server. The client can decode the payload to check expiry
+        locally (zero-knowledge), but revocation requires an online call to
+        `POST /verify-offline-token`.
+      parameters:
+        - name: invoice_id
+          in: query
+          required: true
+          schema: { $ref: "#/components/schemas/InvoiceId" }
+        - name: hours
+          in: query
+          required: false
+          schema: { type: integer, default: 24, minimum: 1, example: 48 }
+        - name: device_hint
+          in: query
+          required: false
+          schema: { type: string, example: "Alice Laptop" }
+      responses:
+        "201":
+          description: Token issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token_id:         { type: string, format: uuid }
+                  invoice_id:       { $ref: "#/components/schemas/InvoiceId" }
+                  valid_until:      { $ref: "#/components/schemas/IsoTimestamp" }
+                  max_offline_hours:{ type: integer }
+                  device_hint:      { type: string, nullable: true }
+                  token:            { type: string, description: "HS256 JWT — deliver to licensee" }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: License not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /admin/offline-tokens:
+    get:
+      tags: [admin-offline]
+      summary: List all issued offline tokens
+      operationId: listOfflineTokens
+      security:
+        - AdminKey: []
+      responses:
+        "200":
+          description: Tokens ordered by most recently issued, with live status
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/OfflineTokenRow" }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  # ── Session Orchestration ────────────────────────────────────────────────────
+  /admin/sessions/live:
+    get:
+      tags: [admin-analytics]
+      summary: Real-time active sessions from Redis
+      operationId: getLiveSessions
+      security:
+        - AdminKey: []
+      description: |
+        Returns session metadata read directly from Redis — no database query.
+        Each entry was written at `POST /analytics/start` and has a 5-minute TTL
+        refreshed on every heartbeat.  Missing entries = expired or revoked sessions.
+      responses:
+        "200":
+          description: Live sessions currently in Redis
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    session_id: { type: integer }
+                    license_id: { type: integer }
+                    invoice_id: { $ref: "#/components/schemas/InvoiceId" }
+                    content_id: { type: string }
+                    ip_address: { type: string }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /admin/sessions/revoke-all/{invoice_id}:
+    post:
+      tags: [admin-analytics]
+      summary: Bulk-revoke all active sessions for a license
+      operationId: revokeAllSessions
+      security:
+        - AdminKey: []
+      description: |
+        Sets Redis revocation flags for every live session belonging to the
+        license identified by `invoice_id`.  Viewers are notified within ≤30 s
+        (on their next heartbeat) and shown a "Session terminated" overlay.
+        The corresponding DB rows are also deleted to free the session slots.
+      parameters:
+        - name: invoice_id
+          in: path
+          required: true
+          schema: { $ref: "#/components/schemas/InvoiceId" }
+      responses:
+        "200":
+          description: Sessions revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invoice_id:    { $ref: "#/components/schemas/InvoiceId" }
+                  revoked_count: { type: integer, example: 3 }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: License not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /admin/events:
+    get:
+      tags: [admin-analytics]
+      summary: Server-Sent Events stream for real-time revocation notifications
+      operationId: adminEvents
+      description: |
+        Opens a persistent SSE connection. Every time a session is revoked
+        (via `DELETE /admin/analytics/{id}` or `POST /admin/sessions/revoke-all/{id}`),
+        a JSON frame is pushed to all connected admin clients.
+
+        **Authentication**: because `EventSource` cannot set custom headers,
+        the admin key must be passed as the `?admin_key=` query parameter
+        OR as the `X-Admin-Key` header (for non-browser clients).
+
+        **Frame format**:
+        ```
+        data: {"session_id": 42, "invoice_id": "INV-001", "action": "revoked"}
+        ```
+        An initial `data: {"type":"connected"}` frame is sent on connection.
+        Periodic `: keepalive` comment lines prevent proxy timeouts.
+      parameters:
+        - name: admin_key
+          in: query
+          required: false
+          schema: { type: string }
+          description: Admin key fallback for EventSource (cannot set headers)
+        - name: X-Admin-Key
+          in: header
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: Newline-delimited SSE frames
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /admin/offline-token/{token_id}:
+    delete:
+      tags: [admin-offline]
+      summary: Revoke an offline token
+      operationId: revokeOfflineToken
+      security:
+        - AdminKey: []
+      description: |
+        Sets `is_revoked = true` in the DB. The JWT signature and expiry remain
+        cryptographically valid, but all server-side checks (`/verify-offline-token`,
+        `POST /analytics/start`) will reject the token from this point forward.
+      parameters:
+        - name: token_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Token revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:   { type: string, example: revoked }
+                  token_id: { type: string, format: uuid }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: Token not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  # ── Content Vault ───────────────────────────────────────────────────────────
+  /admin/vault/upload:
+    post:
+      tags: [admin-vault]
+      summary: Upload a file to the encrypted vault
+      operationId: vaultUpload
+      security:
+        - AdminKey: []
+      description: |
+        Accepts a multipart file upload, encrypts the content with AES-256-GCM
+        using a per-file random key, wraps that key with Fernet (VAULT_MASTER_KEY),
+        and stores the ciphertext on S3. The plaintext never reaches the object store.
+        The wrapped AES key and GCM nonce are stored in the database row.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: File to encrypt and store
+                description:
+                  type: string
+                  description: Human-readable description (optional)
+      responses:
+        "201":
+          description: File encrypted and stored
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VaultUploadResponse" }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /admin/vault/contents:
+    get:
+      tags: [admin-vault]
+      summary: List all vault items (admin)
+      operationId: vaultListAdmin
+      security:
+        - AdminKey: []
+      description: |
+        Returns full metadata for every item in the vault, ordered by most
+        recently uploaded. Encryption keys and S3 paths are **never** included.
+      responses:
+        "200":
+          description: Vault contents
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/VaultItem" }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /admin/vault/{content_id}:
+    delete:
+      tags: [admin-vault]
+      summary: Delete a vault item
+      operationId: vaultDelete
+      security:
+        - AdminKey: []
+      description: Deletes the S3 object and the database row. Irreversible.
+      parameters:
+        - name: content_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Item deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:     { type: string, example: deleted }
+                  content_id: { type: string, format: uuid }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: Content not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /vault/contents:
+    get:
+      tags: [vault]
+      summary: List vault items (public)
+      operationId: vaultListPublic
+      description: |
+        Returns safe metadata (filename, type, size, description) for all vault
+        items. No encryption keys, S3 paths, or admin-only fields are exposed.
+      responses:
+        "200":
+          description: Vault contents
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/VaultItem" }
+
+  /vault/access/{content_id}:
+    post:
+      tags: [vault]
+      summary: Request a vault access token
+      operationId: vaultRequestAccess
+      description: |
+        Verifies the supplied license key, checks geofencing and concurrent
+        session limits, creates a `ViewAnalytics` session, and returns a
+        short-lived JWT (`type="vault_access"`, TTL = 5 minutes).
+        Pass this token to `GET /vault/stream/{access_token}` to receive
+        the decrypted content.
+      parameters:
+        - name: content_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: invoice_id
+          in: query
+          required: true
+          schema: { $ref: "#/components/schemas/InvoiceId" }
+        - name: license_key
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Access token issued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VaultAccessResponse" }
+        "403": { description: Invalid license key or geo-blocked, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: Content or license not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: Session limit reached, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /vault/stream/{access_token}:
+    get:
+      tags: [vault]
+      summary: Stream decrypted vault content
+      operationId: vaultStream
+      description: |
+        Validates the short-lived vault access JWT, downloads the encrypted blob
+        from S3, decrypts it with AES-256-GCM, and streams the plaintext in
+        64 KB chunks with the original `Content-Type`.
+
+        The response includes `Cache-Control: no-store` to prevent browser caching.
+        Expired or invalid tokens return **401**.
+      parameters:
+        - name: access_token
+          in: path
+          required: true
+          schema: { type: string, description: "JWT obtained from POST /vault/access/{content_id}" }
+      responses:
+        "200":
+          description: Decrypted file content
+          content:
+            "*/*":
+              schema:
+                type: string
+                format: binary
+        "401": { description: Token expired or invalid, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: Content not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }

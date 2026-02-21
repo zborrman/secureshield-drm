@@ -21,18 +21,47 @@ import models
 import geo_service
 import redis_service
 import vault_service
+import anomaly_service
 
 app = FastAPI()
 
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
 OFFLINE_TOKEN_SECRET = os.getenv("OFFLINE_TOKEN_SECRET", ADMIN_API_KEY + "-offline-v1")
+SUPER_ADMIN_KEY = os.getenv("SUPER_ADMIN_KEY", "")
 
 BOT_THRESHOLD_MS = 500       # first heartbeat faster than this → bot suspect
 SESSION_ACTIVE_MINUTES = 5   # sessions with no heartbeat for >5 min are considered expired
 
+async def get_db():
+    async with SessionLocal() as session:
+        yield session
+
 async def require_admin(x_admin_key: str = Header(default="")):
     if not ADMIN_API_KEY or x_admin_key != ADMIN_API_KEY:
         raise HTTPException(status_code=401, detail="Unauthorized: invalid or missing X-Admin-Key")
+
+async def require_super_admin(x_super_admin_key: str = Header(default="")):
+    if not SUPER_ADMIN_KEY or x_super_admin_key != SUPER_ADMIN_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized: invalid or missing X-Super-Admin-Key")
+
+async def get_current_tenant(
+    x_tenant_id: str = Header(default=""),
+    x_admin_key: str = Header(default=""),
+    db: AsyncSession = Depends(get_db),
+) -> models.Tenant:
+    if not x_tenant_id:
+        raise HTTPException(status_code=401, detail="Missing X-Tenant-ID header")
+    result = await db.execute(
+        select(models.Tenant).where(models.Tenant.slug == x_tenant_id)
+    )
+    tenant = result.scalars().first()
+    if not tenant:
+        raise HTTPException(status_code=404, detail=f"Tenant not found: {x_tenant_id}")
+    if not tenant.is_active:
+        raise HTTPException(status_code=403, detail="Tenant account is deactivated")
+    if not verify_license_key(x_admin_key, tenant.admin_key_hash):
+        raise HTTPException(status_code=401, detail="Invalid tenant admin key")
+    return tenant
 
 # Создаем таблицы при старте (в продакшене лучше использовать Alembic)
 @app.on_event("startup")
@@ -46,16 +75,13 @@ async def startup():
 async def shutdown():
     await redis_service.close_redis()
 
-async def get_db():
-    async with SessionLocal() as session:
-        yield session
-
-async def log_attempt(db: AsyncSession, invoice_id: str, ip: str, success: bool, ua: str):
+async def log_attempt(db: AsyncSession, invoice_id: str, ip: str, success: bool, ua: str, tenant_id: int = None):
     new_log = models.AuditLog(
         invoice_id=invoice_id,
         ip_address=ip,
         is_success=success,
-        user_agent=ua
+        user_agent=ua,
+        tenant_id=tenant_id,
     )
     db.add(new_log)
     await db.commit()
@@ -959,12 +985,515 @@ async def vault_stream(
     )
 
 
+# ── Multi-Tenant SaaS ──────────────────────────────────────────
+
+@app.post("/superadmin/tenants", status_code=201)
+async def create_tenant(
+    name: str,
+    slug: str,
+    admin_key: str,
+    plan: str = "starter",
+    max_licenses: int = 10,
+    max_vault_mb: int = 100,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_super_admin),
+):
+    """Create a new tenant. The admin_key is bcrypt-hashed and never stored in plain form."""
+    existing = await db.execute(select(models.Tenant).where(models.Tenant.slug == slug))
+    if existing.scalars().first():
+        raise HTTPException(status_code=409, detail=f"Tenant slug already exists: {slug}")
+    tenant = models.Tenant(
+        name=name,
+        slug=slug,
+        admin_key_hash=hash_license_key(admin_key),
+        plan=plan,
+        max_licenses=max_licenses,
+        max_vault_mb=max_vault_mb,
+    )
+    db.add(tenant)
+    await db.commit()
+    await db.refresh(tenant)
+    return {
+        "id": tenant.id,
+        "name": tenant.name,
+        "slug": tenant.slug,
+        "plan": tenant.plan,
+        "max_licenses": tenant.max_licenses,
+        "max_vault_mb": tenant.max_vault_mb,
+        "is_active": tenant.is_active,
+        "created_at": tenant.created_at.isoformat() + "Z",
+    }
+
+
+@app.get("/superadmin/tenants")
+async def list_tenants(
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_super_admin),
+):
+    """List all tenants."""
+    result = await db.execute(select(models.Tenant).order_by(models.Tenant.created_at.desc()))
+    return [
+        {
+            "id": t.id,
+            "name": t.name,
+            "slug": t.slug,
+            "plan": t.plan,
+            "max_licenses": t.max_licenses,
+            "max_vault_mb": t.max_vault_mb,
+            "is_active": t.is_active,
+            "created_at": t.created_at.isoformat() + "Z",
+        }
+        for t in result.scalars().all()
+    ]
+
+
+@app.patch("/superadmin/tenants/{slug}")
+async def update_tenant(
+    slug: str,
+    plan: str = None,
+    max_licenses: int = None,
+    max_vault_mb: int = None,
+    is_active: bool = None,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_super_admin),
+):
+    """Update a tenant's plan, limits, or active status."""
+    result = await db.execute(select(models.Tenant).where(models.Tenant.slug == slug))
+    tenant = result.scalars().first()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if plan is not None:
+        tenant.plan = plan
+    if max_licenses is not None:
+        tenant.max_licenses = max_licenses
+    if max_vault_mb is not None:
+        tenant.max_vault_mb = max_vault_mb
+    if is_active is not None:
+        tenant.is_active = is_active
+    await db.commit()
+    return {"slug": slug, "updated": True}
+
+
+@app.delete("/superadmin/tenants/{slug}", status_code=200)
+async def delete_tenant(
+    slug: str,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_super_admin),
+):
+    """Permanently delete a tenant and all its data."""
+    result = await db.execute(select(models.Tenant).where(models.Tenant.slug == slug))
+    tenant = result.scalars().first()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    await db.delete(tenant)
+    await db.commit()
+    return {"status": "deleted", "slug": slug}
+
+
+# ── Tenant-scoped endpoints ────────────────────────────────────
+
+@app.post("/tenant/licenses", status_code=201)
+async def tenant_create_license(
+    invoice_id: str,
+    owner_id: str,
+    max_sessions: int = 1,
+    allowed_countries: str = "",
+    db: AsyncSession = Depends(get_db),
+    tenant: models.Tenant = Depends(get_current_tenant),
+):
+    """Tenant admin: create a license scoped to this tenant, subject to plan limits."""
+    count_result = await db.execute(
+        select(models.License).where(models.License.tenant_id == tenant.id)
+    )
+    if len(count_result.scalars().all()) >= tenant.max_licenses:
+        raise HTTPException(
+            status_code=403,
+            detail=f"License limit reached for plan '{tenant.plan}' (max {tenant.max_licenses})",
+        )
+    plain_key = f"SK-{secrets.token_urlsafe(16)}"
+    hashed_key = hash_license_key(plain_key)
+    new_license = models.License(
+        invoice_id=invoice_id,
+        license_key=hashed_key,
+        owner_id=owner_id,
+        is_paid=False,
+        max_sessions=max_sessions,
+        allowed_countries=allowed_countries.upper().strip() or None,
+        tenant_id=tenant.id,
+    )
+    db.add(new_license)
+    await db.commit()
+    return {
+        "invoice_id": invoice_id,
+        "plain_key_to_copy": plain_key,
+        "warning": "Save the key — only the hash is stored.",
+    }
+
+
+@app.get("/tenant/licenses")
+async def tenant_list_licenses(
+    db: AsyncSession = Depends(get_db),
+    tenant: models.Tenant = Depends(get_current_tenant),
+):
+    """Tenant admin: list licenses belonging to this tenant only."""
+    result = await db.execute(
+        select(models.License).where(models.License.tenant_id == tenant.id)
+    )
+    return result.scalars().all()
+
+
+@app.get("/tenant/audit-log")
+async def tenant_audit_log(
+    db: AsyncSession = Depends(get_db),
+    tenant: models.Tenant = Depends(get_current_tenant),
+):
+    """Tenant admin: audit log scoped to this tenant."""
+    result = await db.execute(
+        select(models.AuditLog)
+        .where(models.AuditLog.tenant_id == tenant.id)
+        .order_by(models.AuditLog.timestamp.desc())
+        .limit(100)
+    )
+    return result.scalars().all()
+
+
+@app.get("/tenant/analytics")
+async def tenant_analytics(
+    db: AsyncSession = Depends(get_db),
+    tenant: models.Tenant = Depends(get_current_tenant),
+):
+    """Tenant admin: viewing analytics scoped to this tenant."""
+    result = await db.execute(
+        select(models.ViewAnalytics)
+        .where(models.ViewAnalytics.tenant_id == tenant.id)
+        .order_by(models.ViewAnalytics.start_time.desc())
+    )
+    return result.scalars().all()
+
+
+@app.get("/tenant/alerts")
+async def tenant_alerts(
+    db: AsyncSession = Depends(get_db),
+    tenant: models.Tenant = Depends(get_current_tenant),
+):
+    """Tenant admin: failed access attempts in the last 30 minutes for this tenant."""
+    time_threshold = datetime.utcnow() - timedelta(minutes=30)
+    result = await db.execute(
+        select(models.AuditLog)
+        .where(
+            models.AuditLog.tenant_id == tenant.id,
+            models.AuditLog.is_success == False,
+            models.AuditLog.timestamp >= time_threshold,
+        )
+        .order_by(models.AuditLog.timestamp.desc())
+    )
+    return result.scalars().all()
+
+
+@app.post("/tenant/offline-token", status_code=201)
+async def tenant_issue_offline_token(
+    invoice_id: str,
+    hours: int = 24,
+    device_hint: str = "",
+    db: AsyncSession = Depends(get_db),
+    tenant: models.Tenant = Depends(get_current_tenant),
+):
+    """Tenant admin: issue an offline token for a license in this tenant."""
+    result = await db.execute(
+        select(models.License).where(
+            models.License.invoice_id == invoice_id,
+            models.License.tenant_id == tenant.id,
+        )
+    )
+    if not result.scalars().first():
+        raise HTTPException(status_code=404, detail="License not found in this tenant")
+    token_id = str(uuid.uuid4())
+    now = datetime.utcnow()
+    valid_until = now + timedelta(hours=hours)
+    payload = {
+        "sub": invoice_id,
+        "jti": token_id,
+        "iat": int(now.timestamp()),
+        "exp": int(valid_until.timestamp()),
+        "type": "offline",
+        "max_offline_hours": hours,
+    }
+    jwt_token = _jwt.encode(payload, OFFLINE_TOKEN_SECRET, algorithm="HS256")
+    db.add(models.OfflineToken(
+        id=token_id,
+        invoice_id=invoice_id,
+        issued_at=now,
+        valid_until=valid_until,
+        max_offline_hours=hours,
+        device_hint=device_hint.strip() or None,
+        tenant_id=tenant.id,
+    ))
+    await db.commit()
+    return {
+        "token_id": token_id,
+        "invoice_id": invoice_id,
+        "valid_until": valid_until.isoformat() + "Z",
+        "max_offline_hours": hours,
+        "device_hint": device_hint.strip() or None,
+        "token": jwt_token,
+    }
+
+
+@app.get("/tenant/offline-tokens")
+async def tenant_list_offline_tokens(
+    db: AsyncSession = Depends(get_db),
+    tenant: models.Tenant = Depends(get_current_tenant),
+):
+    """Tenant admin: list offline tokens issued for this tenant."""
+    result = await db.execute(
+        select(models.OfflineToken)
+        .where(models.OfflineToken.tenant_id == tenant.id)
+        .order_by(models.OfflineToken.issued_at.desc())
+    )
+    now = datetime.utcnow()
+    return [
+        {
+            "token_id": t.id,
+            "invoice_id": t.invoice_id,
+            "issued_at": t.issued_at.isoformat() + "Z",
+            "valid_until": t.valid_until.isoformat() + "Z",
+            "max_offline_hours": t.max_offline_hours,
+            "device_hint": t.device_hint,
+            "is_revoked": t.is_revoked,
+            "is_expired": now >= t.valid_until,
+            "hours_remaining": max(0, int((t.valid_until - now).total_seconds() // 3600)),
+        }
+        for t in result.scalars().all()
+    ]
+
+
+@app.delete("/tenant/offline-token/{token_id}")
+async def tenant_revoke_offline_token(
+    token_id: str,
+    db: AsyncSession = Depends(get_db),
+    tenant: models.Tenant = Depends(get_current_tenant),
+):
+    """Tenant admin: revoke an offline token owned by this tenant."""
+    row = await db.get(models.OfflineToken, token_id)
+    if not row or row.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Token not found in this tenant")
+    row.is_revoked = True
+    await db.commit()
+    return {"status": "revoked", "token_id": token_id}
+
+
+@app.post("/tenant/vault/upload", status_code=201)
+async def tenant_vault_upload(
+    file: UploadFile = File(...),
+    description: str = "",
+    db: AsyncSession = Depends(get_db),
+    tenant: models.Tenant = Depends(get_current_tenant),
+):
+    """Tenant admin: upload encrypted content to this tenant's vault partition."""
+    quota_result = await db.execute(
+        select(models.VaultContent).where(models.VaultContent.tenant_id == tenant.id)
+    )
+    used_bytes = sum(r.size_bytes for r in quota_result.scalars().all())
+    max_bytes = tenant.max_vault_mb * 1024 * 1024
+    raw = await file.read()
+    if used_bytes + len(raw) > max_bytes:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Vault quota exceeded ({tenant.max_vault_mb} MB limit for plan '{tenant.plan}')",
+        )
+    content_id = str(uuid.uuid4())
+    s3_key = f"vault/{tenant.slug}/{content_id}.enc"
+    ciphertext, wrapped_key, iv_b64 = vault_service.encrypt_content(raw)
+    await asyncio.to_thread(vault_service.upload_encrypted, s3_key, ciphertext)
+    record = models.VaultContent(
+        id=content_id,
+        filename=file.filename,
+        content_type=file.content_type or "application/octet-stream",
+        size_bytes=len(raw),
+        s3_key=s3_key,
+        encrypted_key=wrapped_key,
+        iv=iv_b64,
+        description=description.strip() or None,
+        tenant_id=tenant.id,
+    )
+    db.add(record)
+    await db.commit()
+    await db.refresh(record)
+    return {
+        "content_id": content_id,
+        "filename": file.filename,
+        "size_bytes": len(raw),
+        "content_type": record.content_type,
+        "uploaded_at": record.uploaded_at.isoformat() + "Z",
+    }
+
+
+@app.get("/tenant/vault/contents")
+async def tenant_vault_list(
+    db: AsyncSession = Depends(get_db),
+    tenant: models.Tenant = Depends(get_current_tenant),
+):
+    """Tenant admin: list vault items belonging to this tenant only."""
+    result = await db.execute(
+        select(models.VaultContent)
+        .where(models.VaultContent.tenant_id == tenant.id)
+        .order_by(models.VaultContent.uploaded_at.desc())
+    )
+    return [
+        {
+            "content_id": r.id,
+            "filename": r.filename,
+            "content_type": r.content_type,
+            "size_bytes": r.size_bytes,
+            "description": r.description,
+            "uploaded_at": r.uploaded_at.isoformat() + "Z",
+        }
+        for r in result.scalars().all()
+    ]
+
+
+@app.delete("/tenant/vault/{content_id}")
+async def tenant_vault_delete(
+    content_id: str,
+    db: AsyncSession = Depends(get_db),
+    tenant: models.Tenant = Depends(get_current_tenant),
+):
+    """Tenant admin: delete a vault item owned by this tenant."""
+    record = await db.get(models.VaultContent, content_id)
+    if not record or record.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Content not found in this tenant")
+    await asyncio.to_thread(vault_service.delete_object, record.s3_key)
+    await db.delete(record)
+    await db.commit()
+    return {"status": "deleted", "content_id": content_id}
+
+
 @app.post("/signout")
 async def signout(invoice_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     client_ip = request.client.host
     user_agent = request.headers.get("user-agent", "unknown")
     await log_attempt(db, invoice_id, client_ip, False, f"SIGNOUT | {user_agent}")
     return {"status": "signed_out"}
+
+
+# ── AI Anomaly Pattern Discovery ───────────────────────────────────────────
+
+async def _run_anomaly_analysis(
+    db: AsyncSession,
+    hours: float,
+    min_score: int,
+    skip_geo: bool,
+    tenant_id: int | None = None,
+) -> tuple[list[dict], dict]:
+    """Shared logic for admin and tenant anomaly endpoints."""
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+
+    # Scoped session query
+    session_q = select(models.ViewAnalytics).where(
+        models.ViewAnalytics.start_time >= cutoff
+    )
+    if tenant_id is not None:
+        session_q = session_q.where(models.ViewAnalytics.tenant_id == tenant_id)
+    sessions_result = await db.execute(session_q)
+    sessions = sessions_result.scalars().all()
+
+    # Scoped audit-log query
+    audit_q = select(models.AuditLog).where(
+        models.AuditLog.timestamp >= cutoff
+    )
+    if tenant_id is not None:
+        audit_q = audit_q.where(models.AuditLog.tenant_id == tenant_id)
+    audit_result = await db.execute(audit_q)
+    audit_logs = audit_result.scalars().all()
+
+    # Build license_map: license_id → License row
+    license_ids = list({s.license_id for s in sessions})
+    license_map: dict[int, models.License] = {}
+    if license_ids:
+        lic_result = await db.execute(
+            select(models.License).where(models.License.id.in_(license_ids))
+        )
+        for lic in lic_result.scalars().all():
+            license_map[lic.id] = lic
+
+    # Optionally build country_map: ip → country_code
+    country_map: dict[str, str] | None = None
+    if not skip_geo and sessions:
+        unique_ips = list({s.ip_address for s in sessions if s.ip_address})
+        country_map = {}
+        for ip in unique_ips:
+            try:
+                country_map[ip] = await geo_service.get_country_code(ip)
+            except Exception:
+                country_map[ip] = ""
+
+    findings = anomaly_service.analyze_all(
+        sessions=sessions,
+        audit_logs=audit_logs,
+        country_map=country_map,
+        license_map=license_map,
+    )
+    if min_score > 0:
+        findings = [f for f in findings if f["score"] >= min_score]
+
+    summary = anomaly_service.build_summary(findings)
+    return findings, summary
+
+
+@app.get("/admin/anomalies")
+async def get_anomalies(
+    hours: float = 24.0,
+    min_score: int = 0,
+    skip_geo: bool = False,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    """AI Anomaly Pattern Discovery — full findings list.
+
+    Runs 7 statistical detectors over the last `hours` of telemetry and returns
+    scored anomaly findings with evidence payloads and natural-language
+    recommendations, sorted by severity score descending.
+
+    Query params:
+    - hours     : rolling window to analyse (default 24)
+    - min_score : filter out findings below this score (default 0 = all)
+    - skip_geo  : skip multi-country detection (faster, no GeoIP lookups)
+    """
+    findings, summary = await _run_anomaly_analysis(
+        db, hours, min_score, skip_geo, tenant_id=None
+    )
+    return {"findings": findings, "summary": summary}
+
+
+@app.get("/admin/anomalies/summary")
+async def get_anomalies_summary(
+    hours: float = 24.0,
+    skip_geo: bool = False,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    """Quick anomaly summary — counts by severity + top 3 findings.
+    Designed for embedding in the admin dashboard status strip."""
+    findings, summary = await _run_anomaly_analysis(
+        db, hours, min_score=0, skip_geo=skip_geo, tenant_id=None
+    )
+    return {"summary": summary, "top_findings": findings[:3]}
+
+
+@app.get("/tenant/anomalies")
+async def tenant_get_anomalies(
+    hours: float = 24.0,
+    min_score: int = 0,
+    skip_geo: bool = False,
+    db: AsyncSession = Depends(get_db),
+    tenant: models.Tenant = Depends(get_current_tenant),
+):
+    """AI Anomaly Pattern Discovery scoped to this tenant's data."""
+    findings, summary = await _run_anomaly_analysis(
+        db, hours, min_score, skip_geo, tenant_id=tenant.id
+    )
+    return {"findings": findings, "summary": summary}
+
 
 @app.post("/create-checkout-session")
 async def create_checkout(invoice_id: str):

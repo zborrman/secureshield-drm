@@ -14,6 +14,9 @@ os.environ.setdefault("ADMIN_API_KEY", "test-admin-key")
 # so the default derivation (ADMIN_API_KEY + "-offline-v1" = 25 bytes) is not used.
 os.environ.setdefault("OFFLINE_TOKEN_SECRET", "test-offline-secret-for-jwt-hs256!")
 
+# Multi-tenant super-admin key
+os.environ.setdefault("SUPER_ADMIN_KEY", "test-super-admin-key")
+
 # Vault / S3 settings — set before any vault_service import
 os.environ.setdefault(
     "VAULT_MASTER_KEY",

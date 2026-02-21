@@ -19,18 +19,29 @@ function formatBytes(bytes: number): string {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export default function ContentVault({ adminKey }: { adminKey: string }) {
+interface ContentVaultProps {
+    adminKey: string;
+    /** When set, uses /tenant/vault/* endpoints scoped to this tenant slug. */
+    tenantSlug?: string;
+}
+
+export default function ContentVault({ adminKey, tenantSlug }: ContentVaultProps) {
     const [items, setItems] = useState<VaultItem[]>([]);
     const [uploading, setUploading] = useState(false);
     const [uploadError, setUploadError] = useState<string | null>(null);
     const [description, setDescription] = useState('');
     const fileRef = useRef<HTMLInputElement>(null);
 
-    const headers = { 'X-Admin-Key': adminKey };
+    // Route prefix: /tenant/vault when a tenantSlug is provided, /admin/vault otherwise
+    const vaultBase = tenantSlug ? `${API}/tenant/vault` : `${API}/admin/vault`;
+    const headers: Record<string, string> = tenantSlug
+        ? { 'X-Tenant-ID': tenantSlug, 'X-Admin-Key': adminKey }
+        : { 'X-Admin-Key': adminKey };
 
     const fetchItems = async () => {
         try {
-            const res = await fetch(`${API}/admin/vault/contents`, { headers });
+            const listUrl = tenantSlug ? `${API}/tenant/vault/contents` : `${API}/admin/vault/contents`;
+            const res = await fetch(listUrl, { headers });
             if (res.ok) setItems(await res.json());
         } catch {
             // silently fail — list stays stale
@@ -40,7 +51,7 @@ export default function ContentVault({ adminKey }: { adminKey: string }) {
     useEffect(() => {
         if (adminKey) fetchItems();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [adminKey]);
+    }, [adminKey, tenantSlug]);
 
     const handleUpload = async () => {
         const file = fileRef.current?.files?.[0];
@@ -53,7 +64,7 @@ export default function ContentVault({ adminKey }: { adminKey: string }) {
 
         try {
             const res = await fetch(
-                `${API}/admin/vault/upload?description=${encodeURIComponent(description)}`,
+                `${vaultBase}/upload?description=${encodeURIComponent(description)}`,
                 { method: 'POST', headers, body: form },
             );
             if (!res.ok) {
@@ -74,7 +85,7 @@ export default function ContentVault({ adminKey }: { adminKey: string }) {
     const handleDelete = async (contentId: string, filename: string) => {
         if (!confirm(`Delete "${filename}" from the vault? This cannot be undone.`)) return;
         try {
-            const res = await fetch(`${API}/admin/vault/${contentId}`, {
+            const res = await fetch(`${vaultBase}/${contentId}`, {
                 method: 'DELETE',
                 headers,
             });

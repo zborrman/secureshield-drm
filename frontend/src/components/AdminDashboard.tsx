@@ -5,6 +5,7 @@ import TrustScore from './TrustScore';
 import LeakReporter from './LeakReporter';
 import OfflineTokenManager from './OfflineTokenManager';
 import ContentVault from './ContentVault';
+import AnomalyDashboard from './AnomalyDashboard';
 import { useAdminEvents } from '../hooks/useAdminEvents';
 
 interface ViewSession {
@@ -286,6 +287,11 @@ export default function AdminDashboard() {
             ))}
           </tbody>
         </table>
+      </div>
+
+      {/* AI Anomaly Pattern Discovery */}
+      <div className="mt-10 bg-slate-900 rounded-xl border border-purple-900/30 p-6">
+        <AnomalyDashboard adminKey={adminKey} />
       </div>
 
       {/* Security Audit Trail */}

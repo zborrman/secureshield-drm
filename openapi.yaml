@@ -44,6 +44,12 @@ tags:
     description: Content Vault — encrypted S3 streaming (public, requires valid license key)
   - name: admin-vault
     description: Content Vault management — requires X-Admin-Key
+  - name: admin-anomalies
+    description: AI Anomaly Pattern Discovery — statistical heuristic engine — requires X-Admin-Key
+  - name: superadmin
+    description: Super-admin tenant management — requires X-Super-Admin-Key
+  - name: tenant-admin
+    description: Tenant-scoped admin operations — requires X-Tenant-ID + X-Admin-Key
 
 # ── Security Scheme ──────────────────────────────────────────────────────────
 components:
@@ -53,6 +59,16 @@ components:
       in: header
       name: X-Admin-Key
       description: Static admin API key. Set via `ADMIN_API_KEY` environment variable.
+    SuperAdminKey:
+      type: apiKey
+      in: header
+      name: X-Super-Admin-Key
+      description: Super-admin key for tenant management. Set via `SUPER_ADMIN_KEY` environment variable.
+    TenantId:
+      type: apiKey
+      in: header
+      name: X-Tenant-ID
+      description: Tenant slug. Combined with X-Admin-Key for tenant-scoped endpoints.
 
   schemas:
 
@@ -222,6 +238,65 @@ components:
         filename:           { type: string }
         content_type:       { type: string }
         size_bytes:         { type: integer }
+
+    Tenant:
+      type: object
+      properties:
+        id:           { type: integer }
+        name:         { type: string, example: "Acme Corp" }
+        slug:         { type: string, example: "acme-corp" }
+        plan:         { type: string, enum: [starter, pro, enterprise], example: "starter" }
+        max_licenses: { type: integer, example: 10 }
+        max_vault_mb: { type: integer, example: 100 }
+        is_active:    { type: boolean, example: true }
+        created_at:   { $ref: "#/components/schemas/IsoTimestamp" }
+
+    AnomalyFinding:
+      type: object
+      description: |
+        A single anomaly finding from the AI Pattern Discovery engine.
+        `type` identifies the detector; `score` (0–100) and `severity` (LOW/MEDIUM/HIGH/CRITICAL)
+        indicate urgency; `evidence` is a free-form dict with detector-specific data;
+        `recommendation` is a natural-language action suggestion.
+      properties:
+        anomaly_id:     { type: string, format: uuid }
+        type:
+          type: string
+          enum:
+            - ip_velocity
+            - session_flood
+            - bot_pattern
+            - brute_force_cluster
+            - credential_sharing
+            - duration_anomaly
+            - multi_country
+        score:          { type: integer, minimum: 0, maximum: 100, example: 87 }
+        severity:       { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL], example: "HIGH" }
+        evidence:       { type: object, additionalProperties: true, description: "Detector-specific key/value evidence" }
+        recommendation: { type: string, example: "Revoke all sessions and issue a new key." }
+        detected_at:    { $ref: "#/components/schemas/IsoTimestamp" }
+        invoice_id:     { $ref: "#/components/schemas/InvoiceId", nullable: true }
+        owner_id:       { type: string, nullable: true, example: "alice" }
+        ip_address:     { type: string, nullable: true, example: "5.5.5.5", description: "Set for brute_force_cluster findings" }
+        license_id:     { type: integer, nullable: true }
+
+    AnomalySummary:
+      type: object
+      description: Severity-breakdown count of all findings in the analysis window.
+      properties:
+        total:    { type: integer, example: 7 }
+        critical: { type: integer, example: 1 }
+        high:     { type: integer, example: 3 }
+        medium:   { type: integer, example: 2 }
+        low:      { type: integer, example: 1 }
+
+    AnomalyResponse:
+      type: object
+      properties:
+        findings:
+          type: array
+          items: { $ref: "#/components/schemas/AnomalyFinding" }
+        summary: { $ref: "#/components/schemas/AnomalySummary" }
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
 paths:
@@ -1079,3 +1154,428 @@ paths:
                 format: binary
         "401": { description: Token expired or invalid, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "404": { description: Content not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  # ── Super-Admin Tenant Management ────────────────────────────────────────
+  /superadmin/tenants:
+    post:
+      tags: [superadmin]
+      summary: Create a new tenant
+      operationId: createTenant
+      security:
+        - SuperAdminKey: []
+      parameters:
+        - { name: name,         in: query, required: true,  schema: { type: string } }
+        - { name: slug,         in: query, required: true,  schema: { type: string, example: "acme-corp" } }
+        - { name: admin_key,    in: query, required: true,  schema: { type: string, description: "Plain-text key — bcrypt-hashed before storage" } }
+        - { name: plan,         in: query, required: false, schema: { type: string, enum: [starter, pro, enterprise], default: "starter" } }
+        - { name: max_licenses, in: query, required: false, schema: { type: integer, default: 10 } }
+        - { name: max_vault_mb, in: query, required: false, schema: { type: integer, default: 100 } }
+      responses:
+        "201":
+          description: Tenant created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tenant" }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: Slug already taken, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+    get:
+      tags: [superadmin]
+      summary: List all tenants
+      operationId: listTenants
+      security:
+        - SuperAdminKey: []
+      responses:
+        "200":
+          description: All tenants ordered by creation date
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Tenant" }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /superadmin/tenants/{slug}:
+    patch:
+      tags: [superadmin]
+      summary: Update a tenant (plan, limits, active status)
+      operationId: updateTenant
+      security:
+        - SuperAdminKey: []
+      parameters:
+        - { name: slug,         in: path,  required: true,  schema: { type: string } }
+        - { name: plan,         in: query, required: false, schema: { type: string, enum: [starter, pro, enterprise] } }
+        - { name: max_licenses, in: query, required: false, schema: { type: integer } }
+        - { name: max_vault_mb, in: query, required: false, schema: { type: integer } }
+        - { name: is_active,    in: query, required: false, schema: { type: boolean } }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  slug:    { type: string }
+                  updated: { type: boolean }
+        "401": { description: Unauthorized }
+        "404": { description: Tenant not found }
+
+    delete:
+      tags: [superadmin]
+      summary: Delete a tenant permanently
+      operationId: deleteTenant
+      security:
+        - SuperAdminKey: []
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: deleted }
+                  slug:   { type: string }
+        "401": { description: Unauthorized }
+        "404": { description: Tenant not found }
+
+  # ── Tenant-Scoped Admin Endpoints ─────────────────────────────────────────
+  /tenant/licenses:
+    post:
+      tags: [tenant-admin]
+      summary: Create a license (tenant-scoped, subject to plan limits)
+      operationId: tenantCreateLicense
+      security:
+        - TenantId: []
+      parameters:
+        - { name: invoice_id,        in: query, required: true,  schema: { $ref: "#/components/schemas/InvoiceId" } }
+        - { name: owner_id,          in: query, required: true,  schema: { type: string } }
+        - { name: max_sessions,      in: query, required: false, schema: { type: integer, default: 1 } }
+        - { name: allowed_countries, in: query, required: false, schema: { $ref: "#/components/schemas/CountryCodes" } }
+      responses:
+        "201":
+          description: License created — plain key shown once
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invoice_id:       { $ref: "#/components/schemas/InvoiceId" }
+                  plain_key_to_copy:{ type: string }
+                  warning:          { type: string }
+        "401": { description: Unauthorized }
+        "403": { description: Plan license limit reached }
+
+    get:
+      tags: [tenant-admin]
+      summary: List licenses belonging to this tenant
+      operationId: tenantListLicenses
+      security:
+        - TenantId: []
+      responses:
+        "200":
+          description: Tenant's licenses
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/License" }
+        "401": { description: Unauthorized }
+
+  /tenant/audit-log:
+    get:
+      tags: [tenant-admin]
+      summary: Audit log scoped to this tenant
+      operationId: tenantAuditLog
+      security:
+        - TenantId: []
+      responses:
+        "200":
+          description: Last 100 audit events for this tenant
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AuditLog" }
+        "401": { description: Unauthorized }
+
+  /tenant/analytics:
+    get:
+      tags: [tenant-admin]
+      summary: Viewing analytics scoped to this tenant
+      operationId: tenantAnalytics
+      security:
+        - TenantId: []
+      responses:
+        "200":
+          description: All view sessions for this tenant
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ViewSession" }
+        "401": { description: Unauthorized }
+
+  /tenant/alerts:
+    get:
+      tags: [tenant-admin]
+      summary: Failed access attempts in the last 30 min (tenant-scoped)
+      operationId: tenantAlerts
+      security:
+        - TenantId: []
+      responses:
+        "200":
+          description: Recent failed events
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AuditLog" }
+        "401": { description: Unauthorized }
+
+  /tenant/offline-token:
+    post:
+      tags: [tenant-admin]
+      summary: Issue an offline token (tenant-scoped)
+      operationId: tenantIssueOfflineToken
+      security:
+        - TenantId: []
+      parameters:
+        - { name: invoice_id,  in: query, required: true,  schema: { $ref: "#/components/schemas/InvoiceId" } }
+        - { name: hours,       in: query, required: false, schema: { type: integer, default: 24 } }
+        - { name: device_hint, in: query, required: false, schema: { type: string } }
+      responses:
+        "201":
+          description: Offline token issued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OfflineTokenRow" }
+        "401": { description: Unauthorized }
+        "404": { description: License not found in this tenant }
+
+    get:
+      tags: [tenant-admin]
+      summary: List offline tokens for this tenant
+      operationId: tenantListOfflineTokens
+      security:
+        - TenantId: []
+      responses:
+        "200":
+          description: Offline tokens
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/OfflineTokenRow" }
+        "401": { description: Unauthorized }
+
+  /tenant/offline-token/{token_id}:
+    delete:
+      tags: [tenant-admin]
+      summary: Revoke an offline token (tenant-scoped)
+      operationId: tenantRevokeOfflineToken
+      security:
+        - TenantId: []
+      parameters:
+        - { name: token_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Token revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:   { type: string, example: revoked }
+                  token_id: { type: string, format: uuid }
+        "401": { description: Unauthorized }
+        "404": { description: Token not found in this tenant }
+
+  /tenant/vault/upload:
+    post:
+      tags: [tenant-admin]
+      summary: Upload a file to this tenant's vault partition
+      operationId: tenantVaultUpload
+      security:
+        - TenantId: []
+      description: |
+        Applies the same AES-256-GCM + Fernet encryption as the global vault.
+        Files are stored under `vault/{tenant_slug}/{content_id}.enc` in S3.
+        Upload is rejected if `used_bytes + new_size > max_vault_mb * 1024 * 1024`.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:        { type: string, format: binary }
+                description: { type: string }
+      responses:
+        "201":
+          description: File uploaded and encrypted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VaultUploadResponse" }
+        "401": { description: Unauthorized }
+        "403": { description: Vault quota exceeded }
+
+  /tenant/vault/contents:
+    get:
+      tags: [tenant-admin]
+      summary: List vault items for this tenant
+      operationId: tenantVaultList
+      security:
+        - TenantId: []
+      responses:
+        "200":
+          description: Tenant's vault items (no encryption keys)
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/VaultItem" }
+        "401": { description: Unauthorized }
+
+  /tenant/vault/{content_id}:
+    delete:
+      tags: [tenant-admin]
+      summary: Delete a vault item from this tenant's partition
+      operationId: tenantVaultDelete
+      security:
+        - TenantId: []
+      parameters:
+        - { name: content_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Deleted from S3 and DB
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:     { type: string, example: deleted }
+                  content_id: { type: string, format: uuid }
+        "401": { description: Unauthorized }
+        "404": { description: Content not found in this tenant }
+
+  # ── AI Anomaly Pattern Discovery ─────────────────────────────────────────
+  /admin/anomalies:
+    get:
+      tags: [admin-anomalies]
+      summary: AI Anomaly Pattern Discovery — full findings list
+      operationId: getAnomalies
+      security:
+        - AdminKey: []
+      description: |
+        Runs 7 statistical detectors over the rolling window of telemetry
+        (ViewAnalytics + AuditLog) and returns scored anomaly findings with
+        evidence payloads and natural-language recommendations.
+
+        **Detectors**:
+        1. `ip_velocity` — many distinct IPs per license in a short window
+        2. `session_flood` — burst of sessions from one license
+        3. `bot_pattern` — high ratio of is_bot_suspect sessions
+        4. `brute_force_cluster` — many failed auth attempts grouped by IP
+        5. `credential_sharing` — many distinct device/user-agent strings per license
+        6. `duration_anomaly` — very-short-duration sessions at high volume
+        7. `multi_country` — license accessed from multiple countries rapidly
+
+        Results are sorted by score descending.
+      parameters:
+        - name: hours
+          in: query
+          required: false
+          schema: { type: number, default: 24.0, minimum: 0.1 }
+          description: Rolling window to analyse (hours)
+        - name: min_score
+          in: query
+          required: false
+          schema: { type: integer, default: 0, minimum: 0, maximum: 100 }
+          description: Filter out findings below this score
+        - name: skip_geo
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: Skip multi-country detection (faster, no GeoIP lookups)
+      responses:
+        "200":
+          description: Anomaly findings with severity summary
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AnomalyResponse" }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /admin/anomalies/summary:
+    get:
+      tags: [admin-anomalies]
+      summary: Quick anomaly summary — counts by severity + top 3 findings
+      operationId: getAnomaliesSummary
+      security:
+        - AdminKey: []
+      description: |
+        Designed for embedding in the admin dashboard status strip.
+        Returns severity breakdown counts and the top 3 highest-scoring findings.
+      parameters:
+        - name: hours
+          in: query
+          required: false
+          schema: { type: number, default: 24.0, minimum: 0.1 }
+          description: Rolling window to analyse (hours)
+        - name: skip_geo
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: Skip multi-country detection (faster)
+      responses:
+        "200":
+          description: Summary with top findings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  summary: { $ref: "#/components/schemas/AnomalySummary" }
+                  top_findings:
+                    type: array
+                    maxItems: 3
+                    items: { $ref: "#/components/schemas/AnomalyFinding" }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /tenant/anomalies:
+    get:
+      tags: [tenant-admin]
+      summary: AI Anomaly Pattern Discovery scoped to this tenant
+      operationId: tenantGetAnomalies
+      security:
+        - TenantId: []
+      description: |
+        Same 7 statistical detectors as `/admin/anomalies`, but scoped to
+        sessions and audit logs belonging to this tenant only.
+      parameters:
+        - name: hours
+          in: query
+          required: false
+          schema: { type: number, default: 24.0, minimum: 0.1 }
+          description: Rolling window to analyse (hours)
+        - name: min_score
+          in: query
+          required: false
+          schema: { type: integer, default: 0, minimum: 0, maximum: 100 }
+          description: Filter out findings below this score
+        - name: skip_geo
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: Skip multi-country detection (faster)
+      responses:
+        "200":
+          description: Tenant-scoped anomaly findings with severity summary
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AnomalyResponse" }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }

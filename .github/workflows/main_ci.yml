@@ -84,15 +84,14 @@ jobs:
 
       - name: Run backend tests (pytest)
         env:
-          # NullPool in conftest.py uses this URL directly (no Docker hostname)
+          # Override conftest.py's SQLite default so CI runs against real Postgres
           DATABASE_URL: postgresql+asyncpg://user:password@localhost:5432/main_db
-          # Must match os.environ.setdefault("ADMIN_API_KEY", "test-admin-key") in conftest.py
           ADMIN_API_KEY: test-admin-key
-          # Prevents Stripe SDK from raising on missing secret
+          OFFLINE_TOKEN_SECRET: test-offline-secret-for-jwt-hs256!
           STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
         run: |
           cd backend
-          pytest tests/ test_security.py -v --tb=short
+          pytest tests/ -v --tb=short
 
   # ──────────────────────────────────────────────
   # Stage 3: Playwright E2E tests

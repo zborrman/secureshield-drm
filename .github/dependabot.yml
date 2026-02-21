@@ -1,0 +1,77 @@
+version: 2
+
+updates:
+
+  # ── GitHub Actions ─────────────────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      prefix: "chore(ci)"
+
+  # ── Python / pip ───────────────────────────────────────────────
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      # Bundle all security-related packages into a single PR
+      security-libs:
+        patterns:
+          - "cryptography"
+          - "bcrypt"
+          - "passlib"
+          - "PyJWT"
+      # Bundle testing tools
+      test-tools:
+        patterns:
+          - "pytest*"
+          - "httpx"
+          - "fakeredis"
+          - "moto*"
+          - "aiosqlite"
+      # Bundle AWS SDK
+      aws-sdk:
+        patterns:
+          - "boto3"
+          - "botocore"
+          - "s3transfer"
+    labels:
+      - dependencies
+      - python
+    commit-message:
+      prefix: "chore(deps)"
+    open-pull-requests-limit: 5
+
+  # ── Node.js / npm ──────────────────────────────────────────────
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      # Bundle all Next.js / React packages
+      nextjs:
+        patterns:
+          - "next"
+          - "react"
+          - "react-dom"
+          - "@types/react*"
+      # Bundle Tailwind + PostCSS
+      styling:
+        patterns:
+          - "tailwindcss"
+          - "postcss"
+          - "autoprefixer"
+    labels:
+      - dependencies
+      - javascript
+    commit-message:
+      prefix: "chore(deps)"
+    open-pull-requests-limit: 5

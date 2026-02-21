@@ -1,0 +1,156 @@
+name: CI Failure Handler
+
+# Triggered after the main CI/CD pipeline finishes on master/main.
+# On FAILURE  → opens (or updates) a GitHub Issue labelled `ci-failure`.
+# On SUCCESS  → closes any open `ci-failure` issues (the build is green again).
+
+on:
+  workflow_run:
+    workflows: ["SecureShield CI/CD Pipeline"]
+    types: [completed]
+    branches: [master, main]
+
+permissions:
+  issues: write
+
+jobs:
+
+  # ─────────────────────────────────────────────────────────────
+  # Open / update a "CI broken" issue when the pipeline fails
+  # ─────────────────────────────────────────────────────────────
+  open-issue-on-failure:
+    name: "Open CI failure issue"
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Ensure ci-failure label exists
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'ci-failure',
+              });
+            } catch {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'ci-failure',
+                color: 'd93f0b',
+                description: 'CI pipeline is broken on master',
+              });
+            }
+
+      - name: Open or update CI failure issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run      = context.payload.workflow_run;
+            const runUrl   = run.html_url;
+            const branch   = run.head_branch;
+            const sha      = run.head_sha.slice(0, 7);
+            const commitUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${run.head_sha}`;
+            const actor    = run.triggering_actor?.login ?? 'unknown';
+
+            const title = `🔴 CI broken on ${branch} (${sha})`;
+            const body = [
+              `## CI pipeline failure`,
+              ``,
+              `The **SecureShield CI/CD Pipeline** failed on \`${branch}\`.`,
+              ``,
+              `| Field | Value |`,
+              `|---|---|`,
+              `| Branch | \`${branch}\` |`,
+              `| Commit | [\`${sha}\`](${commitUrl}) |`,
+              `| Triggered by | @${actor} |`,
+              `| Workflow run | [View logs](${runUrl}) |`,
+              ``,
+              `Please investigate the failing job(s) and push a fix to restore green CI.`,
+              ``,
+              `_This issue was opened automatically and will be closed once CI is green again._`,
+              ``,
+              `<!-- ci-failure-tracker -->`,
+            ].join('\n');
+
+            const MARKER = '<!-- ci-failure-tracker -->';
+
+            // Look for an existing open ci-failure issue
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'ci-failure',
+              state: 'open',
+            });
+
+            const existing = issues.find(i => i.body?.includes(MARKER));
+            if (existing) {
+              // Update the existing issue with the latest failing run details
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                title,
+                body,
+              });
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: `⚠️ CI is **still failing** on \`${branch}\` — commit [\`${sha}\`](${commitUrl}).\n[View run](${runUrl})`,
+              });
+              core.info(`Updated existing issue #${existing.number}`);
+            } else {
+              const { data: issue } = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['ci-failure'],
+              });
+              core.info(`Opened issue #${issue.number}: ${issue.html_url}`);
+            }
+
+  # ─────────────────────────────────────────────────────────────
+  # Close any open "CI broken" issue when CI turns green again
+  # ─────────────────────────────────────────────────────────────
+  close-issue-on-success:
+    name: "Close CI failure issue"
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Close open ci-failure issues
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run      = context.payload.workflow_run;
+            const branch   = run.head_branch;
+            const sha      = run.head_sha.slice(0, 7);
+            const runUrl   = run.html_url;
+
+            const MARKER = '<!-- ci-failure-tracker -->';
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'ci-failure',
+              state: 'open',
+            });
+
+            for (const issue of issues.filter(i => i.body?.includes(MARKER))) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `✅ CI is **green** again on \`${branch}\` ([\`${sha}\`](${run.html_url})).\nClosing this issue automatically.`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+              });
+              core.info(`Closed issue #${issue.number}`);
+            }

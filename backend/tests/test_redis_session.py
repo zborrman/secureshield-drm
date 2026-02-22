@@ -18,7 +18,7 @@ import redis_service
 
 async def _create_license(admin_client, invoice_id: str, owner_id: str = "tester"):
     res = await admin_client.post(
-        f"/admin/create-license?invoice_id={invoice_id}&owner_id={owner_id}"
+        f"/admin/create-license?invoice_id={invoice_id}&owner_id={owner_id}&is_paid=true"
     )
     assert res.status_code == 201
     return res.json()

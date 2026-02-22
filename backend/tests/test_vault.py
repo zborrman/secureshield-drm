@@ -79,7 +79,7 @@ async def test_vault_access_and_stream(db_session, admin_client, client, mock_s3
 
     # 2. Create a paid license
     lic = await admin_client.post(
-        "/admin/create-license?invoice_id=inv-vault-1&owner_id=alice&max_sessions=3"
+        "/admin/create-license?invoice_id=inv-vault-1&owner_id=alice&max_sessions=3&is_paid=true"
     )
     assert lic.status_code == 201
     plain_key = lic.json()["plain_key_to_copy"]
@@ -106,8 +106,8 @@ async def test_stream_rejects_expired_token(db_session, admin_client, client, mo
     import os
     from datetime import datetime, timedelta
 
-    # Manually forge an already-expired token
-    secret = os.getenv("OFFLINE_TOKEN_SECRET", os.getenv("ADMIN_API_KEY", "") + "-offline-v1")
+    # Manually forge an already-expired token (vault stream uses VAULT_TOKEN_SECRET)
+    secret = os.getenv("VAULT_TOKEN_SECRET", os.getenv("OFFLINE_TOKEN_SECRET", "") + "-vault-v1")
     expired_token = _jwt.encode(
         {
             "type": "vault_access",
@@ -152,7 +152,7 @@ async def _upload_and_license(admin_client, mock_s3, invoice_id: str = "inv-asso
     content_id = up.json()["content_id"]
 
     lic = await admin_client.post(
-        f"/admin/create-license?invoice_id={invoice_id}&owner_id=bob&max_sessions=3"
+        f"/admin/create-license?invoice_id={invoice_id}&owner_id=bob&max_sessions=3&is_paid=true"
     )
     assert lic.status_code == 201
     plain_key = lic.json()["plain_key_to_copy"]
@@ -213,7 +213,7 @@ async def test_restricted_content_blocks_unlinked_license(db_session, admin_clie
 
     # Create a second, unlinked license
     lic2 = await admin_client.post(
-        "/admin/create-license?invoice_id=inv-other-1&owner_id=eve&max_sessions=3"
+        "/admin/create-license?invoice_id=inv-other-1&owner_id=eve&max_sessions=3&is_paid=true"
     )
     plain_key2 = lic2.json()["plain_key_to_copy"]
 

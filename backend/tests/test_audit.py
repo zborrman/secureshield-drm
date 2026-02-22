@@ -118,7 +118,7 @@ async def test_analytics_start_creates_session(admin_client, client, db_session)
     invoice_id = f"ANA-{secrets.token_hex(4)}"
 
     await admin_client.post(
-        f"/admin/create-license?invoice_id={invoice_id}&owner_id=viewer_01"
+        f"/admin/create-license?invoice_id={invoice_id}&owner_id=viewer_01&is_paid=true"
     )
 
     res = await client.post(
@@ -146,7 +146,7 @@ async def test_analytics_heartbeat_accumulates_duration(admin_client, client, db
     invoice_id = f"ANA-{secrets.token_hex(4)}"
 
     await admin_client.post(
-        f"/admin/create-license?invoice_id={invoice_id}&owner_id=viewer_02"
+        f"/admin/create-license?invoice_id={invoice_id}&owner_id=viewer_02&is_paid=true"
     )
     start_res = await client.post(
         "/analytics/start",
@@ -177,7 +177,7 @@ async def test_admin_analytics_returns_sessions(admin_client, client, db_session
     invoice_id = f"ANA-{secrets.token_hex(4)}"
 
     await admin_client.post(
-        f"/admin/create-license?invoice_id={invoice_id}&owner_id=viewer_03"
+        f"/admin/create-license?invoice_id={invoice_id}&owner_id=viewer_03&is_paid=true"
     )
     await client.post(
         "/analytics/start",
@@ -208,7 +208,7 @@ async def test_immediate_heartbeat_flagged_as_bot(admin_client, client, db_sessi
 
     invoice_id = f"BOT-{secrets.token_hex(4)}"
     await admin_client.post(
-        f"/admin/create-license?invoice_id={invoice_id}&owner_id=bot_checker"
+        f"/admin/create-license?invoice_id={invoice_id}&owner_id=bot_checker&is_paid=true"
     )
     start_res = await client.post(
         "/analytics/start",
@@ -236,7 +236,7 @@ async def test_delayed_heartbeat_not_flagged(admin_client, client, db_session):
 
     invoice_id = f"HUMAN-{secrets.token_hex(4)}"
     await admin_client.post(
-        f"/admin/create-license?invoice_id={invoice_id}&owner_id=human_checker"
+        f"/admin/create-license?invoice_id={invoice_id}&owner_id=human_checker&is_paid=true"
     )
     start_res = await client.post(
         "/analytics/start",
@@ -262,7 +262,7 @@ async def test_session_limit_blocks_excess_sessions(admin_client, client, db_ses
     """Second /analytics/start on a max_sessions=1 license must return 409."""
     invoice_id = f"LIMIT-{secrets.token_hex(4)}"
     await admin_client.post(
-        f"/admin/create-license?invoice_id={invoice_id}&owner_id=limiter&max_sessions=1"
+        f"/admin/create-license?invoice_id={invoice_id}&owner_id=limiter&max_sessions=1&is_paid=true"
     )
 
     first = await client.post(
@@ -285,7 +285,7 @@ async def test_session_limit_allows_when_previous_expired(admin_client, client, 
 
     invoice_id = f"EXPIRE-{secrets.token_hex(4)}"
     await admin_client.post(
-        f"/admin/create-license?invoice_id={invoice_id}&owner_id=expirer&max_sessions=1"
+        f"/admin/create-license?invoice_id={invoice_id}&owner_id=expirer&max_sessions=1&is_paid=true"
     )
 
     first = await client.post(
@@ -312,7 +312,7 @@ async def test_admin_can_revoke_session(admin_client, client, db_session):
     """DELETE /admin/analytics/{id} must remove the session and free the slot."""
     invoice_id = f"REVOKE-{secrets.token_hex(4)}"
     await admin_client.post(
-        f"/admin/create-license?invoice_id={invoice_id}&owner_id=revoker&max_sessions=1"
+        f"/admin/create-license?invoice_id={invoice_id}&owner_id=revoker&max_sessions=1&is_paid=true"
     )
 
     start = await client.post(

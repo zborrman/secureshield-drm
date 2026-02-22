@@ -13,6 +13,7 @@ os.environ.setdefault("ADMIN_API_KEY", "test-admin-key")
 # PyJWT ≥ 2.9 requires HMAC keys ≥ 32 bytes for HS256 — set an explicit secret
 # so the default derivation (ADMIN_API_KEY + "-offline-v1" = 25 bytes) is not used.
 os.environ.setdefault("OFFLINE_TOKEN_SECRET", "test-offline-secret-for-jwt-hs256!")
+os.environ.setdefault("VAULT_TOKEN_SECRET",   "test-vault-token-secret-for-jwt32!")
 
 # Multi-tenant super-admin key
 os.environ.setdefault("SUPER_ADMIN_KEY", "test-super-admin-key")
@@ -35,7 +36,8 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 from database import Base, DATABASE_URL
-from main import app, get_db
+from main import app
+from dependencies import get_db
 
 # NullPool: no connection caching — each call gets a fresh connection.
 # This prevents "another operation is in progress" when pytest-asyncio

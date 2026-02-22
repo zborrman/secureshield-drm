@@ -27,7 +27,7 @@ async def test_geo_unrestricted_license_allows_any_region(admin_client, client, 
     """License without allowed_countries must be accessible from any region."""
     invoice_id = f"GEO-{secrets.token_hex(4)}"
     res = await admin_client.post(
-        f"/admin/create-license?invoice_id={invoice_id}&owner_id=geo_open"
+        f"/admin/create-license?invoice_id={invoice_id}&owner_id=geo_open&is_paid=true"
     )
     plain_key = res.json()["plain_key_to_copy"]
 
@@ -45,7 +45,7 @@ async def test_geo_allows_when_country_matches(admin_client, client, db_session)
     """License restricted to 'XX' must allow testclient (local IP → 'XX')."""
     invoice_id = f"GEO-{secrets.token_hex(4)}"
     res = await admin_client.post(
-        f"/admin/create-license?invoice_id={invoice_id}&owner_id=geo_local&allowed_countries=XX"
+        f"/admin/create-license?invoice_id={invoice_id}&owner_id=geo_local&allowed_countries=XX&is_paid=true"
     )
     plain_key = res.json()["plain_key_to_copy"]
 
@@ -90,7 +90,7 @@ async def test_geo_allows_when_country_in_multi_list(admin_client, client, db_se
     """License with 'US,XX,GB' must allow testclient ('XX' matches the list)."""
     invoice_id = f"GEO-{secrets.token_hex(4)}"
     res = await admin_client.post(
-        f"/admin/create-license?invoice_id={invoice_id}&owner_id=geo_multi&allowed_countries=US,XX,GB"
+        f"/admin/create-license?invoice_id={invoice_id}&owner_id=geo_multi&allowed_countries=US,XX,GB&is_paid=true"
     )
     plain_key = res.json()["plain_key_to_copy"]
 
@@ -108,7 +108,7 @@ async def test_geo_patch_updates_restriction_immediately(admin_client, client, d
     """PATCH /admin/licenses/{id}/geo must enforce the new rule on the next request."""
     invoice_id = f"GEO-{secrets.token_hex(4)}"
     res = await admin_client.post(
-        f"/admin/create-license?invoice_id={invoice_id}&owner_id=geo_patch"
+        f"/admin/create-license?invoice_id={invoice_id}&owner_id=geo_patch&is_paid=true"
     )
     plain_key = res.json()["plain_key_to_copy"]
 

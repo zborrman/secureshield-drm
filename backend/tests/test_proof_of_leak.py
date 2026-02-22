@@ -20,7 +20,7 @@ async def test_leak_report_by_invoice_id(admin_client, client, db_session):
     """POST /admin/proof-of-leak?invoice_id=... must create a valid evidence report."""
     invoice_id = f"LEAK-{secrets.token_hex(4)}"
     await admin_client.post(
-        f"/admin/create-license?invoice_id={invoice_id}&owner_id=suspect_alice"
+        f"/admin/create-license?invoice_id={invoice_id}&owner_id=suspect_alice&is_paid=true"
     )
     # Create some activity to include in the report
     await client.post(

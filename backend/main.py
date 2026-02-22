@@ -2,12 +2,14 @@
 SecureShield DRM — application entry point.
 
 Responsibilities of this file:
+  - Configure structured logging (JSON, with X-Request-ID correlation)
   - Create the FastAPI app instance
-  - Register middleware (CORS, security headers, rate-limit error handler)
+  - Register middleware (CORS, security headers, request logging, rate-limit handler)
   - Include all domain routers
   - Handle startup / shutdown lifecycle (secrets validation, DB tables, Redis)
 """
-import logging
+import time
+import uuid
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +17,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
+from logging_config import setup_logging, get_logger
 from database import engine, Base
 import redis_service
 from config import (
@@ -26,10 +29,44 @@ from config import (
 )
 from rate_limit import limiter
 
-# ── Routers ──────────────────────────────────────────────────────────────────
+# ── Logging ───────────────────────────────────────────────────────────────────
+setup_logging()
+logger = get_logger(__name__)
+
+# ── Routers ───────────────────────────────────────────────────────────────────
 from routers import auth, admin, vault, superadmin, tenant
 
-logger = logging.getLogger(__name__)
+
+# ── Request-ID + access-log middleware ────────────────────────────────────────
+
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    """
+    Assigns a unique X-Request-ID to every request (echoed in the response),
+    and emits a structured access-log entry with method, path, status, and
+    duration once the response is complete.
+    """
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        start = time.perf_counter()
+
+        response = await call_next(request)
+
+        duration_ms = round((time.perf_counter() - start) * 1000, 1)
+        response.headers["X-Request-ID"] = request_id
+
+        logger.info(
+            "request",
+            extra={
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "status": response.status_code,
+                "duration_ms": duration_ms,
+            },
+        )
+        return response
+
 
 # ── Security headers middleware ───────────────────────────────────────────────
 
@@ -72,7 +109,9 @@ app.state.limiter = limiter
 # Rate-limit exceeded -> 429 JSON response
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# Middleware is applied in reverse order (last added = outermost)
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestLoggingMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -95,7 +134,7 @@ app.include_router(tenant.router)
 
 @app.on_event("startup")
 async def startup() -> None:
-    """Validate critical secrets and create DB tables."""
+    """Validate critical secrets, configure logging, and create DB tables."""
     _problems: list[str] = []
 
     if not ADMIN_API_KEY:
@@ -116,10 +155,12 @@ async def startup() -> None:
         logger.critical(msg)
         raise RuntimeError(msg)
 
+    logger.info("startup", extra={"status": "ok", "db": "creating_tables"})
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    logger.info("shutdown", extra={"status": "closing_redis"})
     await redis_service.close_redis()

@@ -12,12 +12,12 @@ import models
 
 @pytest.mark.asyncio
 async def test_health_returns_correct_json(client):
-    """/health must return {"status": "healthy", "database": "connected"}."""
+    """/health must return status=healthy and database=ok when all deps are up."""
     res = await client.get("/health")
     assert res.status_code == 200
     body = res.json()
     assert body["status"] == "healthy"
-    assert body["database"] == "connected"
+    assert body["database"] == "ok"
 
 
 # ── 2. Signout audit logging ──────────────────────────────────

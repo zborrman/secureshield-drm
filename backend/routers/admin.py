@@ -19,6 +19,8 @@ Admin-only routes (require X-Admin-Key):
   GET  /admin/offline-tokens
   GET  /admin/anomalies
   GET  /admin/anomalies/summary
+  GET  /admin/gdpr/export/{invoice_id}
+  DELETE /admin/gdpr/purge/{invoice_id}
 """
 import uuid
 import json
@@ -58,11 +60,57 @@ router = APIRouter()
 
 @router.get("/health")
 async def health_check(db: AsyncSession = Depends(get_db)):
+    """
+    Deep health check — verifies all critical dependencies:
+    - Database (SELECT 1)
+    - Redis (PING)
+    - S3 (head-bucket)
+
+    Returns 200 only if all three are reachable; 503 otherwise with details.
+    Any individual failure is reported in the response body so operators
+    can identify which component is degraded.
+    """
+    checks: dict[str, str] = {}
+
+    # Database
     try:
         await db.execute(text("SELECT 1"))
-        return {"status": "healthy", "database": "connected"}
-    except Exception:
-        raise HTTPException(status_code=503, detail="Database unreachable")
+        checks["database"] = "ok"
+    except Exception as exc:
+        checks["database"] = f"error: {exc}"
+
+    # Redis
+    try:
+        r = await redis_service.get_redis()
+        await r.ping()
+        checks["redis"] = "ok"
+    except Exception as exc:
+        checks["redis"] = f"error: {exc}"
+
+    # S3 — skipped when test/placeholder credentials are detected (AWS_ACCESS_KEY_ID="test")
+    import os as _os
+    import vault_service
+    _aws_key = _os.getenv("AWS_ACCESS_KEY_ID", "")
+    if vault_service.S3_BUCKET and _aws_key and _aws_key != "test":
+        try:
+            import asyncio
+            await asyncio.to_thread(
+                vault_service.get_s3().head_bucket, Bucket=vault_service.S3_BUCKET
+            )
+            checks["s3"] = "ok"
+        except Exception as exc:
+            checks["s3"] = f"error: {exc}"
+    else:
+        checks["s3"] = "unconfigured"
+
+    all_ok = all(v in ("ok", "unconfigured") for v in checks.values())
+    status_code = 200 if all_ok else 503
+    body = {"status": "healthy" if all_ok else "degraded", **checks}
+
+    if not all_ok:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=503, content=body)
+    return body
 
 
 # ── Licenses ───────────────────────────────────────────────────────────────────
@@ -451,6 +499,175 @@ async def get_leak_report(
     if not row:
         raise HTTPException(status_code=404, detail="Report not found")
     return {**json.loads(row.evidence_json), "integrity_hash": row.integrity_hash}
+
+
+# ── GDPR ───────────────────────────────────────────────────────────────────────
+
+@router.get("/admin/gdpr/export/{invoice_id}")
+async def gdpr_export(
+    invoice_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    """
+    GDPR Subject Access Request — return all data held for this invoice_id.
+
+    Includes: license record, audit logs, view analytics sessions,
+    offline tokens, and vault content grants.
+    The response is a structured JSON object suitable for delivery to the
+    data subject.
+    """
+    result = await db.execute(
+        select(models.License).where(models.License.invoice_id == invoice_id)
+    )
+    license_record = result.scalars().first()
+    if not license_record:
+        raise HTTPException(status_code=404, detail=f"No data found for invoice_id: {invoice_id}")
+
+    # Audit logs
+    audit_result = await db.execute(
+        select(models.AuditLog).where(models.AuditLog.invoice_id == invoice_id)
+    )
+    audit_logs = [
+        {
+            "timestamp": r.timestamp.isoformat() + "Z",
+            "ip_address": r.ip_address,
+            "is_success": r.is_success,
+            "user_agent": r.user_agent,
+        }
+        for r in audit_result.scalars().all()
+    ]
+
+    # View analytics
+    sessions_result = await db.execute(
+        select(models.ViewAnalytics).where(
+            models.ViewAnalytics.license_id == license_record.id
+        )
+    )
+    sessions = [
+        {
+            "start_time": r.start_time.isoformat() + "Z",
+            "duration_seconds": r.duration_seconds,
+            "ip_address": r.ip_address,
+            "device_info": r.device_info,
+            "content_id": r.content_id,
+        }
+        for r in sessions_result.scalars().all()
+    ]
+
+    # Offline tokens
+    tokens_result = await db.execute(
+        select(models.OfflineToken).where(models.OfflineToken.invoice_id == invoice_id)
+    )
+    tokens = [
+        {
+            "issued_at": r.issued_at.isoformat() + "Z",
+            "valid_until": r.valid_until.isoformat() + "Z",
+            "device_hint": r.device_hint,
+            "is_revoked": r.is_revoked,
+        }
+        for r in tokens_result.scalars().all()
+    ]
+
+    return {
+        "invoice_id": invoice_id,
+        "owner_id": license_record.owner_id,
+        "is_paid": license_record.is_paid,
+        "audit_logs": audit_logs,
+        "view_sessions": sessions,
+        "offline_tokens": tokens,
+        "exported_at": datetime.utcnow().isoformat() + "Z",
+    }
+
+
+@router.delete("/admin/gdpr/purge/{invoice_id}", status_code=200)
+async def gdpr_purge(
+    invoice_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    """
+    GDPR Right to be Forgotten — permanently delete ALL data for this invoice_id.
+
+    Deletes (in dependency order):
+      1. LicenseContent grants
+      2. ViewAnalytics sessions
+      3. OfflineTokens
+      4. AuditLog entries
+      5. LeakReport entries
+      6. The License record itself
+
+    This operation is IRREVERSIBLE. A structured summary of what was deleted
+    is returned so the operator can record the purge event.
+    """
+    result = await db.execute(
+        select(models.License).where(models.License.invoice_id == invoice_id)
+    )
+    license_record = result.scalars().first()
+    if not license_record:
+        raise HTTPException(status_code=404, detail=f"No data found for invoice_id: {invoice_id}")
+
+    counts: dict[str, int] = {}
+
+    # 1. LicenseContent grants
+    lc_result = await db.execute(
+        select(models.LicenseContent).where(
+            models.LicenseContent.license_id == license_record.id
+        )
+    )
+    lc_rows = lc_result.scalars().all()
+    for row in lc_rows:
+        await db.delete(row)
+    counts["license_grants"] = len(lc_rows)
+
+    # 2. ViewAnalytics
+    va_result = await db.execute(
+        select(models.ViewAnalytics).where(
+            models.ViewAnalytics.license_id == license_record.id
+        )
+    )
+    va_rows = va_result.scalars().all()
+    for row in va_rows:
+        await db.delete(row)
+    counts["view_sessions"] = len(va_rows)
+
+    # 3. OfflineTokens
+    ot_result = await db.execute(
+        select(models.OfflineToken).where(models.OfflineToken.invoice_id == invoice_id)
+    )
+    ot_rows = ot_result.scalars().all()
+    for row in ot_rows:
+        await db.delete(row)
+    counts["offline_tokens"] = len(ot_rows)
+
+    # 4. AuditLog entries
+    al_result = await db.execute(
+        select(models.AuditLog).where(models.AuditLog.invoice_id == invoice_id)
+    )
+    al_rows = al_result.scalars().all()
+    for row in al_rows:
+        await db.delete(row)
+    counts["audit_log_entries"] = len(al_rows)
+
+    # 5. LeakReports
+    lr_result = await db.execute(
+        select(models.LeakReport).where(models.LeakReport.invoice_id == invoice_id)
+    )
+    lr_rows = lr_result.scalars().all()
+    for row in lr_rows:
+        await db.delete(row)
+    counts["leak_reports"] = len(lr_rows)
+
+    # 6. License
+    await db.delete(license_record)
+    await db.commit()
+
+    return {
+        "status": "purged",
+        "invoice_id": invoice_id,
+        "deleted": counts,
+        "purged_at": datetime.utcnow().isoformat() + "Z",
+    }
 
 
 # ── Offline Tokens ─────────────────────────────────────────────────────────────

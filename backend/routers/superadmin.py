@@ -120,12 +120,83 @@ async def delete_tenant(
     db: AsyncSession = Depends(get_db),
     _: None = Depends(require_super_admin),
 ):
+    """
+    Delete a tenant and CASCADE all owned data:
+    LicenseContent → ViewAnalytics → OfflineTokens → AuditLog →
+    LeakReports → VaultContents → Licenses → Tenant.
+
+    This is irreversible. S3 vault objects are NOT deleted (they must be
+    removed separately to avoid accidental data loss from orphaned keys).
+    """
     result = await db.execute(
         select(models.Tenant).where(models.Tenant.slug == slug)
     )
     tenant = result.scalars().first()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
+
+    tid = tenant.id
+
+    # Collect all licenses for this tenant (needed for foreign-key cascades)
+    lic_result = await db.execute(
+        select(models.License).where(models.License.tenant_id == tid)
+    )
+    license_ids = [lic.id for lic in lic_result.scalars().all()]
+
+    # 1. LicenseContent grants (FK → licenses.id)
+    if license_ids:
+        lc_result = await db.execute(
+            select(models.LicenseContent).where(
+                models.LicenseContent.license_id.in_(license_ids)
+            )
+        )
+        for row in lc_result.scalars().all():
+            await db.delete(row)
+
+    # 2. ViewAnalytics (tenant_id FK)
+    va_result = await db.execute(
+        select(models.ViewAnalytics).where(models.ViewAnalytics.tenant_id == tid)
+    )
+    for row in va_result.scalars().all():
+        await db.delete(row)
+
+    # 3. OfflineTokens (tenant_id FK)
+    ot_result = await db.execute(
+        select(models.OfflineToken).where(models.OfflineToken.tenant_id == tid)
+    )
+    for row in ot_result.scalars().all():
+        await db.delete(row)
+
+    # 4. AuditLog (tenant_id FK)
+    al_result = await db.execute(
+        select(models.AuditLog).where(models.AuditLog.tenant_id == tid)
+    )
+    for row in al_result.scalars().all():
+        await db.delete(row)
+
+    # 5. LeakReports (tenant_id FK)
+    lr_result = await db.execute(
+        select(models.LeakReport).where(models.LeakReport.tenant_id == tid)
+    )
+    for row in lr_result.scalars().all():
+        await db.delete(row)
+
+    # 6. VaultContents (tenant_id FK)
+    vc_result = await db.execute(
+        select(models.VaultContent).where(models.VaultContent.tenant_id == tid)
+    )
+    for row in vc_result.scalars().all():
+        await db.delete(row)
+
+    # 7. Licenses (tenant_id FK)
+    lic2_result = await db.execute(
+        select(models.License).where(models.License.tenant_id == tid)
+    )
+    for row in lic2_result.scalars().all():
+        await db.delete(row)
+
+    # 8. Tenant itself
     await db.delete(tenant)
     await db.commit()
+
     return {"status": "deleted", "slug": slug}

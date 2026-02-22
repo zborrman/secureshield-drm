@@ -30,21 +30,22 @@ import models
 import vault_service
 from config import OFFLINE_TOKEN_SECRET, MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, ALLOWED_VAULT_MIME
 from rate_limit import limiter, TENANT_WRITE_LIMIT
-from routers.admin import _run_anomaly_analysis
+from schemas import LicenseCreatedResponse, OfflineTokenIssued, VaultUploadResponse
+import anomaly_service
 
 router = APIRouter()
 
 
 # ── Licenses ────────────────────────────────────────────────────────────────
 
-@router.post("/tenant/licenses", status_code=201)
+@router.post("/tenant/licenses", status_code=201, response_model=LicenseCreatedResponse)
 @limiter.limit(TENANT_WRITE_LIMIT)
 async def tenant_create_license(
     request: Request,
-    invoice_id: str,
-    owner_id: str,
+    invoice_id: str = Query(max_length=128),
+    owner_id: str = Query(max_length=128),
     max_sessions: int = Query(default=1, ge=1, le=100),
-    allowed_countries: str = "",
+    allowed_countries: str = Query(default="", max_length=512),
     db: AsyncSession = Depends(get_db),
     tenant: models.Tenant = Depends(get_current_tenant),
 ):
@@ -153,11 +154,11 @@ async def tenant_alerts(
 
 # ── Offline tokens ───────────────────────────────────────────────────────────
 
-@router.post("/tenant/offline-token", status_code=201)
+@router.post("/tenant/offline-token", status_code=201, response_model=OfflineTokenIssued)
 async def tenant_issue_offline_token(
-    invoice_id: str,
+    invoice_id: str = Query(max_length=128),
     hours: int = Query(default=24, ge=1, le=168),
-    device_hint: str = "",
+    device_hint: str = Query(default="", max_length=256),
     db: AsyncSession = Depends(get_db),
     tenant: models.Tenant = Depends(get_current_tenant),
 ):
@@ -252,7 +253,7 @@ async def tenant_revoke_offline_token(
 
 # ── Vault ────────────────────────────────────────────────────────────────────
 
-@router.post("/tenant/vault/upload", status_code=201)
+@router.post("/tenant/vault/upload", status_code=201, response_model=VaultUploadResponse)
 async def tenant_vault_upload(
     file: UploadFile = File(...),
     description: str = "",
@@ -366,7 +367,7 @@ async def tenant_get_anomalies(
     tenant: models.Tenant = Depends(get_current_tenant),
 ):
     """AI Anomaly Pattern Discovery scoped to this tenant's data."""
-    findings, summary = await _run_anomaly_analysis(
+    findings, summary = await anomaly_service.run_anomaly_analysis(
         db, hours, min_score, skip_geo, tenant_id=tenant.id
     )
     return {"findings": findings, "summary": summary}

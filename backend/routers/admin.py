@@ -40,6 +40,7 @@ import models
 import geo_service
 import redis_service
 import anomaly_service
+from schemas import LicenseCreatedResponse, OfflineTokenIssued, AnomalyResponse
 from config import (
     ADMIN_API_KEY,
     OFFLINE_TOKEN_SECRET,
@@ -66,14 +67,14 @@ async def health_check(db: AsyncSession = Depends(get_db)):
 
 # ── Licenses ───────────────────────────────────────────────────────────────────
 
-@router.post("/admin/create-license", status_code=201)
+@router.post("/admin/create-license", status_code=201, response_model=LicenseCreatedResponse)
 @limiter.limit(ADMIN_WRITE_LIMIT)
 async def create_license(
     request: Request,
-    invoice_id: str,
-    owner_id: str,
+    invoice_id: str = Query(max_length=128),
+    owner_id: str = Query(max_length=128),
     max_sessions: int = Query(default=1, ge=1, le=100),
-    allowed_countries: str = "",
+    allowed_countries: str = Query(default="", max_length=512),
     is_paid: bool = False,
     db: AsyncSession = Depends(get_db),
     _: None = Depends(require_admin),
@@ -454,11 +455,11 @@ async def get_leak_report(
 
 # ── Offline Tokens ─────────────────────────────────────────────────────────────
 
-@router.post("/admin/offline-token", status_code=201)
+@router.post("/admin/offline-token", status_code=201, response_model=OfflineTokenIssued)
 async def issue_offline_token(
-    invoice_id: str,
+    invoice_id: str = Query(max_length=128),
     hours: int = Query(default=24, ge=1, le=168),
-    device_hint: str = "",
+    device_hint: str = Query(default="", max_length=256),
     db: AsyncSession = Depends(get_db),
     _: None = Depends(require_admin),
 ):
@@ -551,64 +552,6 @@ async def list_offline_tokens(
 
 # ── AI Anomaly Pattern Discovery ───────────────────────────────────────────────
 
-async def _run_anomaly_analysis(
-    db: AsyncSession,
-    hours: float,
-    min_score: int,
-    skip_geo: bool,
-    tenant_id: int | None = None,
-) -> tuple[list[dict], dict]:
-    """Shared logic for admin and tenant anomaly endpoints."""
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
-
-    session_q = select(models.ViewAnalytics).where(
-        models.ViewAnalytics.start_time >= cutoff
-    )
-    if tenant_id is not None:
-        session_q = session_q.where(models.ViewAnalytics.tenant_id == tenant_id)
-    sessions_result = await db.execute(session_q)
-    sessions = sessions_result.scalars().all()
-
-    audit_q = select(models.AuditLog).where(
-        models.AuditLog.timestamp >= cutoff
-    )
-    if tenant_id is not None:
-        audit_q = audit_q.where(models.AuditLog.tenant_id == tenant_id)
-    audit_result = await db.execute(audit_q)
-    audit_logs = audit_result.scalars().all()
-
-    license_ids = list({s.license_id for s in sessions})
-    license_map: dict[int, models.License] = {}
-    if license_ids:
-        lic_result = await db.execute(
-            select(models.License).where(models.License.id.in_(license_ids))
-        )
-        for lic in lic_result.scalars().all():
-            license_map[lic.id] = lic
-
-    country_map: dict[str, str] | None = None
-    if not skip_geo and sessions:
-        unique_ips = list({s.ip_address for s in sessions if s.ip_address})
-        country_map = {}
-        for ip in unique_ips:
-            try:
-                country_map[ip] = await geo_service.get_country_code(ip)
-            except Exception:
-                country_map[ip] = ""
-
-    findings = anomaly_service.analyze_all(
-        sessions=sessions,
-        audit_logs=audit_logs,
-        country_map=country_map,
-        license_map=license_map,
-    )
-    if min_score > 0:
-        findings = [f for f in findings if f["score"] >= min_score]
-
-    summary = anomaly_service.build_summary(findings)
-    return findings, summary
-
-
 @router.get("/admin/anomalies")
 async def get_anomalies(
     hours: float = 24.0,
@@ -617,7 +560,7 @@ async def get_anomalies(
     db: AsyncSession = Depends(get_db),
     _: None = Depends(require_admin),
 ):
-    findings, summary = await _run_anomaly_analysis(
+    findings, summary = await anomaly_service.run_anomaly_analysis(
         db, hours, min_score, skip_geo, tenant_id=None
     )
     return {"findings": findings, "summary": summary}
@@ -630,7 +573,7 @@ async def get_anomalies_summary(
     db: AsyncSession = Depends(get_db),
     _: None = Depends(require_admin),
 ):
-    findings, summary = await _run_anomaly_analysis(
+    findings, summary = await anomaly_service.run_anomaly_analysis(
         db, hours, min_score=0, skip_geo=skip_geo, tenant_id=None
     )
     return {"summary": summary, "top_findings": findings[:3]}

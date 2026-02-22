@@ -24,7 +24,10 @@ from __future__ import annotations
 import uuid as _uuid
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 # ── Severity thresholds ────────────────────────────────────────────────────
@@ -417,3 +420,72 @@ def analyze_all(
 
     findings.sort(key=lambda x: x["score"], reverse=True)
     return findings
+
+
+# ── Orchestration helper (shared by admin + tenant routers) ────────────────
+
+async def run_anomaly_analysis(
+    db: "AsyncSession",
+    hours: float,
+    min_score: int,
+    skip_geo: bool,
+    tenant_id: int | None = None,
+) -> tuple[list[dict], dict]:
+    """
+    Query telemetry for the given time window, run all detectors, and return
+    (findings, summary).  Optionally scoped to a specific tenant_id.
+
+    Moved here from routers/admin.py so both the admin and tenant routers
+    can import without creating a cross-router dependency.
+    """
+    # Import inside function to avoid circular imports at module load time
+    from sqlalchemy.future import select
+    import models
+    import geo_service
+
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+
+    session_q = select(models.ViewAnalytics).where(
+        models.ViewAnalytics.start_time >= cutoff
+    )
+    if tenant_id is not None:
+        session_q = session_q.where(models.ViewAnalytics.tenant_id == tenant_id)
+    sessions_result = await db.execute(session_q)
+    sessions = sessions_result.scalars().all()
+
+    audit_q = select(models.AuditLog).where(models.AuditLog.timestamp >= cutoff)
+    if tenant_id is not None:
+        audit_q = audit_q.where(models.AuditLog.tenant_id == tenant_id)
+    audit_result = await db.execute(audit_q)
+    audit_logs = audit_result.scalars().all()
+
+    license_ids = list({s.license_id for s in sessions})
+    license_map: dict[int, models.License] = {}
+    if license_ids:
+        lic_result = await db.execute(
+            select(models.License).where(models.License.id.in_(license_ids))
+        )
+        for lic in lic_result.scalars().all():
+            license_map[lic.id] = lic
+
+    country_map: dict[str, str] | None = None
+    if not skip_geo and sessions:
+        unique_ips = list({s.ip_address for s in sessions if s.ip_address})
+        country_map = {}
+        for ip in unique_ips:
+            try:
+                country_map[ip] = await geo_service.get_country_code(ip)
+            except Exception:
+                country_map[ip] = ""
+
+    findings = analyze_all(
+        sessions=sessions,
+        audit_logs=audit_logs,
+        country_map=country_map,
+        license_map=license_map,
+    )
+    if min_score > 0:
+        findings = [f for f in findings if f["score"] >= min_score]
+
+    summary = build_summary(findings)
+    return findings, summary

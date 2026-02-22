@@ -1,6 +1,6 @@
 # SecureShield DRM — Backlog & TODO
 
-> Last updated: 2026-02-20
+> Last updated: 2026-02-22
 > Status key: `[ ]` open · `[~]` in progress · `[x]` done
 
 ---
@@ -20,6 +20,9 @@
 - [x] Watermark fingerprint reverse-lookup (deterministic SHA-256[:4] → int32)
 - [x] Zero-Knowledge Offline Viewing (HS256 JWT, client-side expiry check, revocation)
 - [x] Admin dashboard (licenses table, audit trail, TrustScore, analytics chart, LeakReporter, OfflineTokenManager)
+- [x] Content Vault — AES-256-GCM per-file encryption, Fernet key-wrapping, S3 storage, short-lived stream JWTs (`vault_service.py`, `/admin/vault/*`, `/vault/stream/*`, `ContentVault.tsx`)
+- [x] Multi-Tenant SaaS — Tenant model, super-admin CRUD, per-tenant vault quota, full data isolation (`/superadmin/*`, `/tenant/*`, `SuperAdminDashboard.tsx`, `TenantDashboard.tsx`)
+- [x] AI Anomaly Pattern Discovery — 7 statistical detectors, severity scoring, natural-language recommendations (`anomaly_service.py`, `/admin/anomalies`, `/tenant/anomalies`, `AnomalyDashboard.tsx`)
 
 ---
 
@@ -118,9 +121,11 @@
   - Add `expires_at: DateTime` column to `License`
   - `verify-license` and `analytics/start` reject expired licenses with 410 Gone
 
-- [ ] **Multi-content support**
-  - `content_id` is a free string today — add a `Content` table with `title`, `encrypted_blob_url`
-  - Allow one license to cover multiple content IDs
+- [x] **Multi-content support**
+  - `LicenseContent` M2M table links `License` ↔ `VaultContent`
+  - 4 endpoints: grant/revoke/list per license, list per content item
+  - `POST /vault/access/{id}` enforces per-content license check (open if no links)
+  - `ContentVault.tsx` shows linked-license count badge + inline grant/revoke panel
 
 - [ ] **Email delivery of license keys**
   - After `create-license`, optionally send the plain key via SendGrid / SES

@@ -1076,6 +1076,130 @@ paths:
         "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "404": { description: Content not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
+  /admin/vault/{content_id}/licenses:
+    get:
+      tags: [admin-vault]
+      summary: List licenses linked to a vault item
+      operationId: vaultListLinkedLicenses
+      security:
+        - AdminKey: []
+      description: |
+        Returns all licenses that have been explicitly granted access to this
+        vault content item.  An empty list means the content is *open* (any
+        valid license may stream it).
+      parameters:
+        - name: content_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: List of linked licenses
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    invoice_id:  { type: string }
+                    owner_id:    { type: string }
+                    is_paid:     { type: boolean }
+                    granted_at:  { type: string, format: date-time }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: Content not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /admin/licenses/{invoice_id}/content:
+    get:
+      tags: [admin-licenses]
+      summary: List vault content linked to a license
+      operationId: licenseListLinkedContent
+      security:
+        - AdminKey: []
+      description: Returns all vault items that this license has been explicitly granted access to.
+      parameters:
+        - name: invoice_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: List of accessible vault items
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/VaultItem" }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: License not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /admin/licenses/{invoice_id}/content/{content_id}:
+    post:
+      tags: [admin-licenses]
+      summary: Grant a license access to a vault item
+      operationId: licenseGrantContent
+      security:
+        - AdminKey: []
+      description: |
+        Creates a `LicenseContent` association.  Once any association exists for
+        a vault item, **only linked licenses** may stream it — providing
+        per-content access control.
+      parameters:
+        - name: invoice_id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: content_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "201":
+          description: Access granted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:     { type: string, example: granted }
+                  invoice_id: { type: string }
+                  content_id: { type: string }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: License or content not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: Association already exists, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    delete:
+      tags: [admin-licenses]
+      summary: Revoke a license's access to a vault item
+      operationId: licenseRevokeContent
+      security:
+        - AdminKey: []
+      description: |
+        Removes the `LicenseContent` association.  If removing the last
+        association, the content reverts to *open* (any valid license can
+        stream it again).
+      parameters:
+        - name: invoice_id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: content_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Access revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:     { type: string, example: revoked }
+                  invoice_id: { type: string }
+                  content_id: { type: string }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: Association not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
   /vault/contents:
     get:
       tags: [vault]

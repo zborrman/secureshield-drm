@@ -141,3 +141,124 @@ async def test_delete_removes_content(db_session, admin_client, mock_s3):
     assert list_resp.status_code == 200
     ids = [i["content_id"] for i in list_resp.json()]
     assert content_id not in ids
+
+
+# ── Content ↔ License association tests ───────────────────────────────────────
+
+async def _upload_and_license(admin_client, mock_s3, invoice_id: str = "inv-assoc-1"):
+    """Helper: upload a file and create a paid license; return (content_id, plain_key)."""
+    up = await admin_client.post("/admin/vault/upload", **_upload_file())
+    assert up.status_code == 201
+    content_id = up.json()["content_id"]
+
+    lic = await admin_client.post(
+        f"/admin/create-license?invoice_id={invoice_id}&owner_id=bob&max_sessions=3"
+    )
+    assert lic.status_code == 201
+    plain_key = lic.json()["plain_key_to_copy"]
+    return content_id, plain_key
+
+
+@pytest.mark.asyncio
+async def test_grant_content_to_license(db_session, admin_client, mock_s3):
+    """POST /admin/licenses/{invoice_id}/content/{content_id} → 201."""
+    content_id, _ = await _upload_and_license(admin_client, mock_s3)
+    resp = await admin_client.post(f"/admin/licenses/inv-assoc-1/content/{content_id}")
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["status"] == "granted"
+    assert data["content_id"] == content_id
+
+
+@pytest.mark.asyncio
+async def test_grant_duplicate_returns_409(db_session, admin_client, mock_s3):
+    """Granting the same license-content pair twice → 409."""
+    content_id, _ = await _upload_and_license(admin_client, mock_s3)
+    await admin_client.post(f"/admin/licenses/inv-assoc-1/content/{content_id}")
+    resp = await admin_client.post(f"/admin/licenses/inv-assoc-1/content/{content_id}")
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_list_licenses_for_content(db_session, admin_client, mock_s3):
+    """GET /admin/vault/{content_id}/licenses → includes the granted invoice_id."""
+    content_id, _ = await _upload_and_license(admin_client, mock_s3)
+    await admin_client.post(f"/admin/licenses/inv-assoc-1/content/{content_id}")
+
+    resp = await admin_client.get(f"/admin/vault/{content_id}/licenses")
+    assert resp.status_code == 200
+    invoice_ids = [r["invoice_id"] for r in resp.json()]
+    assert "inv-assoc-1" in invoice_ids
+
+
+@pytest.mark.asyncio
+async def test_list_content_for_license(db_session, admin_client, mock_s3):
+    """GET /admin/licenses/{invoice_id}/content → includes the linked content item."""
+    content_id, _ = await _upload_and_license(admin_client, mock_s3)
+    await admin_client.post(f"/admin/licenses/inv-assoc-1/content/{content_id}")
+
+    resp = await admin_client.get("/admin/licenses/inv-assoc-1/content")
+    assert resp.status_code == 200
+    ids = [r["content_id"] for r in resp.json()]
+    assert content_id in ids
+
+
+@pytest.mark.asyncio
+async def test_restricted_content_blocks_unlinked_license(db_session, admin_client, client, mock_s3):
+    """Once any license is linked to content, other licenses are blocked (403)."""
+    content_id, _ = await _upload_and_license(admin_client, mock_s3, "inv-owner-1")
+
+    # Link inv-owner-1 → content becomes restricted
+    await admin_client.post(f"/admin/licenses/inv-owner-1/content/{content_id}")
+
+    # Create a second, unlinked license
+    lic2 = await admin_client.post(
+        "/admin/create-license?invoice_id=inv-other-1&owner_id=eve&max_sessions=3"
+    )
+    plain_key2 = lic2.json()["plain_key_to_copy"]
+
+    # Eve's license must be denied
+    access_resp = await client.post(
+        f"/vault/access/{content_id}",
+        params={"invoice_id": "inv-other-1", "license_key": plain_key2},
+    )
+    assert access_resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_linked_license_can_access_restricted_content(db_session, admin_client, client, mock_s3):
+    """The license that was granted access can still stream the content."""
+    content_id, plain_key = await _upload_and_license(admin_client, mock_s3, "inv-owner-2")
+    await admin_client.post(f"/admin/licenses/inv-owner-2/content/{content_id}")
+
+    access_resp = await client.post(
+        f"/vault/access/{content_id}",
+        params={"invoice_id": "inv-owner-2", "license_key": plain_key},
+    )
+    assert access_resp.status_code == 200, access_resp.text
+
+
+@pytest.mark.asyncio
+async def test_revoke_content_from_license(db_session, admin_client, client, mock_s3):
+    """DELETE /admin/licenses/{invoice_id}/content/{id} → revoked license is blocked."""
+    content_id, plain_key = await _upload_and_license(admin_client, mock_s3, "inv-revoke-1")
+    await admin_client.post(f"/admin/licenses/inv-revoke-1/content/{content_id}")
+
+    # Confirm access works before revocation
+    pre = await client.post(
+        f"/vault/access/{content_id}",
+        params={"invoice_id": "inv-revoke-1", "license_key": plain_key},
+    )
+    assert pre.status_code == 200
+
+    # Revoke — content now has zero associations → open again
+    rev = await admin_client.delete(f"/admin/licenses/inv-revoke-1/content/{content_id}")
+    assert rev.status_code == 200
+    assert rev.json()["status"] == "revoked"
+
+    # Open content: same license should still work
+    post = await client.post(
+        f"/vault/access/{content_id}",
+        params={"invoice_id": "inv-revoke-1", "license_key": plain_key},
+    )
+    assert post.status_code == 200

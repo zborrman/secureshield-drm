@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, UniqueConstraint
 from datetime import datetime
 from database import Base
 
@@ -95,3 +95,19 @@ class VaultContent(Base):
     description   = Column(String, nullable=True)       # admin-supplied label
     uploaded_at   = Column(DateTime, default=datetime.utcnow)
     tenant_id     = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
+
+
+class LicenseContent(Base):
+    """Many-to-many: which licenses are permitted to stream which vault items.
+
+    If a VaultContent row has zero LicenseContent associations it is treated as
+    open (any valid paid license can access it).  Once any association is added,
+    ONLY linked licenses are allowed — providing per-content access control.
+    """
+    __tablename__ = "license_contents"
+    __table_args__ = (UniqueConstraint("license_id", "content_id", name="uq_license_content"),)
+
+    id         = Column(Integer, primary_key=True, index=True)
+    license_id = Column(Integer, ForeignKey("licenses.id"), nullable=False, index=True)
+    content_id = Column(String,  ForeignKey("vault_contents.id"), nullable=False, index=True)
+    granted_at = Column(DateTime, default=datetime.utcnow)

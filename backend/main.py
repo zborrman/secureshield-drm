@@ -834,6 +834,139 @@ async def vault_delete(
     return {"status": "deleted", "content_id": content_id}
 
 
+# ── Content ↔ License associations ────────────────────────────────────────────
+
+@app.post("/admin/licenses/{invoice_id}/content/{content_id}", status_code=201)
+async def grant_content_to_license(
+    invoice_id: str,
+    content_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    """Grant a license access to a specific vault content item.
+
+    Once any license association exists for a content item, ONLY linked
+    licenses may stream it.  Content with no associations is open to any
+    valid paid license.
+    """
+    lic_result = await db.execute(
+        select(models.License).where(models.License.invoice_id == invoice_id)
+    )
+    lic = lic_result.scalars().first()
+    if not lic:
+        raise HTTPException(status_code=404, detail="License not found")
+
+    content = await db.get(models.VaultContent, content_id)
+    if not content:
+        raise HTTPException(status_code=404, detail="Content not found")
+
+    existing = await db.execute(
+        select(models.LicenseContent).where(
+            models.LicenseContent.license_id == lic.id,
+            models.LicenseContent.content_id == content_id,
+        )
+    )
+    if existing.scalars().first():
+        raise HTTPException(status_code=409, detail="License already has access to this content")
+
+    db.add(models.LicenseContent(license_id=lic.id, content_id=content_id))
+    await db.commit()
+    return {"status": "granted", "invoice_id": invoice_id, "content_id": content_id}
+
+
+@app.delete("/admin/licenses/{invoice_id}/content/{content_id}", status_code=200)
+async def revoke_content_from_license(
+    invoice_id: str,
+    content_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    """Remove a license's access to a vault content item."""
+    lic_result = await db.execute(
+        select(models.License).where(models.License.invoice_id == invoice_id)
+    )
+    lic = lic_result.scalars().first()
+    if not lic:
+        raise HTTPException(status_code=404, detail="License not found")
+
+    link_result = await db.execute(
+        select(models.LicenseContent).where(
+            models.LicenseContent.license_id == lic.id,
+            models.LicenseContent.content_id == content_id,
+        )
+    )
+    link = link_result.scalars().first()
+    if not link:
+        raise HTTPException(status_code=404, detail="Association not found")
+
+    await db.delete(link)
+    await db.commit()
+    return {"status": "revoked", "invoice_id": invoice_id, "content_id": content_id}
+
+
+@app.get("/admin/licenses/{invoice_id}/content")
+async def list_content_for_license(
+    invoice_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    """List all vault content items linked to a license."""
+    lic_result = await db.execute(
+        select(models.License).where(models.License.invoice_id == invoice_id)
+    )
+    lic = lic_result.scalars().first()
+    if not lic:
+        raise HTTPException(status_code=404, detail="License not found")
+
+    result = await db.execute(
+        select(models.VaultContent)
+        .join(models.LicenseContent, models.LicenseContent.content_id == models.VaultContent.id)
+        .where(models.LicenseContent.license_id == lic.id)
+        .order_by(models.VaultContent.uploaded_at.desc())
+    )
+    rows = result.scalars().all()
+    return [
+        {
+            "content_id": r.id,
+            "filename": r.filename,
+            "content_type": r.content_type,
+            "size_bytes": r.size_bytes,
+            "description": r.description,
+            "uploaded_at": r.uploaded_at.isoformat() + "Z",
+        }
+        for r in rows
+    ]
+
+
+@app.get("/admin/vault/{content_id}/licenses")
+async def list_licenses_for_content(
+    content_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    """List all licenses that have been granted access to a vault content item."""
+    content = await db.get(models.VaultContent, content_id)
+    if not content:
+        raise HTTPException(status_code=404, detail="Content not found")
+
+    result = await db.execute(
+        select(models.License, models.LicenseContent.granted_at)
+        .join(models.LicenseContent, models.LicenseContent.license_id == models.License.id)
+        .where(models.LicenseContent.content_id == content_id)
+        .order_by(models.LicenseContent.granted_at.desc())
+    )
+    rows = result.all()
+    return [
+        {
+            "invoice_id": lic.invoice_id,
+            "owner_id": lic.owner_id,
+            "is_paid": lic.is_paid,
+            "granted_at": granted_at.isoformat() + "Z",
+        }
+        for lic, granted_at in rows
+    ]
+
+
 @app.get("/vault/contents")
 async def vault_list_public(db: AsyncSession = Depends(get_db)):
     """Public: list vault items with safe metadata only (no keys, no S3 paths)."""
@@ -875,6 +1008,26 @@ async def vault_request_access(
     lic = lic_result.scalars().first()
     if not lic or not verify_license_key(license_key, lic.license_key):
         raise HTTPException(status_code=403, detail="Invalid license key")
+
+    # Content-license access control: if the content has any license associations,
+    # only linked licenses may stream it.  Zero associations = open to any valid license.
+    has_any_link = await db.execute(
+        select(models.LicenseContent)
+        .where(models.LicenseContent.content_id == content_id)
+        .limit(1)
+    )
+    if has_any_link.scalars().first() is not None:
+        this_link = await db.execute(
+            select(models.LicenseContent).where(
+                models.LicenseContent.license_id == lic.id,
+                models.LicenseContent.content_id == content_id,
+            )
+        )
+        if not this_link.scalars().first():
+            raise HTTPException(
+                status_code=403,
+                detail="This license does not have access to the requested content",
+            )
 
     # Geofence check
     if lic.allowed_countries:

@@ -1,0 +1,23 @@
+[coverage:run]
+source = .
+omit =
+    tests/*
+    conftest.py
+    migrations/*
+    database.py
+    alembic.ini
+
+[coverage:report]
+show_missing = true
+skip_empty = true
+precision = 1
+exclude_lines =
+    # Standard pragmas
+    pragma: no cover
+    # Type checking blocks (never executed)
+    if TYPE_CHECKING:
+    # Abstract methods and errors never hit in tests
+    raise NotImplementedError
+    @abstractmethod
+    # Module entry points
+    if __name__ == .__main__.:

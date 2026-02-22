@@ -5,6 +5,7 @@ Super-admin routes (require X-Super-Admin-Key):
   PATCH  /superadmin/tenants/{slug}
   DELETE /superadmin/tenants/{slug}
 """
+import json
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -15,6 +16,34 @@ from rate_limit import limiter, SUPERADMIN_LIMIT
 import models
 
 router = APIRouter()
+
+
+async def _superadmin_audit(
+    db: AsyncSession,
+    request: Request,
+    action: str,
+    target: str,
+    details: dict,
+) -> None:
+    """Write an AuditLog entry for a super-admin mutating action.
+
+    Uses invoice_id=None and encodes action + details as a JSON string
+    in the user_agent field so they appear in the existing audit log
+    without requiring a schema change.
+    """
+    entry = models.AuditLog(
+        invoice_id=None,
+        ip_address=request.client.host if request.client else "unknown",
+        is_success=True,
+        user_agent=json.dumps({
+            "actor": "super_admin",
+            "action": action,
+            "target": target,
+            **details,
+        }, default=str),
+    )
+    db.add(entry)
+    # Do NOT commit here — the caller commits after its own DB changes
 
 
 @router.post("/superadmin/tenants", status_code=201)
@@ -44,6 +73,8 @@ async def create_tenant(
         max_vault_mb=max_vault_mb,
     )
     db.add(tenant)
+    await _superadmin_audit(db, request, "create_tenant", slug,
+                            {"name": name, "plan": plan})
     await db.commit()
     await db.refresh(tenant)
     return {
@@ -88,6 +119,7 @@ async def list_tenants(
 
 @router.patch("/superadmin/tenants/{slug}")
 async def update_tenant(
+    request: Request,
     slug: str,
     plan: str = None,
     max_licenses: int = Query(default=None, ge=1, le=100_000),
@@ -102,14 +134,20 @@ async def update_tenant(
     tenant = result.scalars().first()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
+    changes: dict = {}
     if plan is not None:
+        changes["plan"] = plan
         tenant.plan = plan
     if max_licenses is not None:
+        changes["max_licenses"] = max_licenses
         tenant.max_licenses = max_licenses
     if max_vault_mb is not None:
+        changes["max_vault_mb"] = max_vault_mb
         tenant.max_vault_mb = max_vault_mb
     if is_active is not None:
+        changes["is_active"] = is_active
         tenant.is_active = is_active
+    await _superadmin_audit(db, request, "update_tenant", slug, {"changes": changes})
     await db.commit()
     return {"slug": slug, "updated": True}
 
@@ -117,6 +155,7 @@ async def update_tenant(
 @router.delete("/superadmin/tenants/{slug}", status_code=200)
 async def delete_tenant(
     slug: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: None = Depends(require_super_admin),
 ):
@@ -197,6 +236,10 @@ async def delete_tenant(
 
     # 8. Tenant itself
     await db.delete(tenant)
+    # Audit log goes to the *global* audit table (tenant_id=None) since
+    # the tenant's own audit rows have already been deleted above.
+    await _superadmin_audit(db, request, "delete_tenant", slug,
+                            {"licenses_deleted": len(license_ids)})
     await db.commit()
 
     return {"status": "deleted", "slug": slug}

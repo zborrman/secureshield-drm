@@ -102,6 +102,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       result: ${{ steps.pytest.outcome }}
+      coverage: ${{ steps.pytest.outputs.COVERAGE_PCT }}
     steps:
       - uses: actions/checkout@v4
 
@@ -121,25 +122,39 @@ jobs:
           cd backend
           pip install -r requirements.txt
 
-      - name: pytest (SQLite)
+      - name: pytest + coverage (SQLite)
         id: pytest
         env:
-          # SQLite — conftest.py setdefault kicks in when this is absent,
-          # but being explicit avoids surprises if CI adds a DB service later.
           DATABASE_URL: sqlite+aiosqlite:///./test_drm.db
-          ADMIN_API_KEY: test-admin-key
+          ADMIN_API_KEY: test-admin-key-for-ci-not-production
           OFFLINE_TOKEN_SECRET: test-offline-secret-for-jwt-hs256!
+          VAULT_TOKEN_SECRET: test-vault-token-secret-for-jwt32!
+          SUPER_ADMIN_KEY: test-super-admin-key-ci
         run: |
           cd backend
-          pytest tests/ -v --tb=short --junitxml=test-results.xml
+          pytest tests/ -v --tb=short \
+            --cov=. --cov-config=.coveragerc \
+            --cov-report=term-missing:skip-covered \
+            --cov-report=xml:coverage.xml \
+            --cov-report=json:coverage.json \
+            --junitxml=test-results.xml
+          # Extract total coverage % and expose as step output
+          PCT=$(python -c "
+          import json, sys
+          d = json.load(open('coverage.json'))
+          print(f\"{d['totals']['percent_covered']:.1f}%\")
+          ")
+          echo "COVERAGE_PCT=${PCT}" >> $GITHUB_OUTPUT
         continue-on-error: true
 
-      - name: Upload test results
+      - name: Upload test + coverage results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: backend-test-results
-          path: backend/test-results.xml
+          path: |
+            backend/test-results.xml
+            backend/coverage.xml
           retention-days: 7
 
   # ─────────────────────────────────────────────────────────────
@@ -165,6 +180,10 @@ jobs:
             const lint_ts   = '${{ needs.lint-ts.outputs.result }}';
             const types_ts  = '${{ needs.typecheck-ts.outputs.result }}';
             const tests     = '${{ needs.backend-tests-fast.outputs.result }}';
+            const coverage  = '${{ needs.backend-tests-fast.outputs.coverage }}' || 'n/a';
+            // Coverage badge: green ≥80%, yellow ≥60%, red <60%
+            const pct = parseFloat(coverage);
+            const covIcon = isNaN(pct) ? '⚪' : pct >= 80 ? '🟢' : pct >= 60 ? '🟡' : '🔴';
 
             const allPassed = [lint_py, lint_ts, types_ts, tests]
               .every(r => r === 'success');
@@ -181,6 +200,7 @@ jobs:
               `| TypeScript lint (ESLint) | ${icon(lint_ts)} |`,
               `| TypeScript types (tsc) | ${icon(types_ts)} |`,
               `| Backend tests (SQLite) | ${icon(tests)} |`,
+              `| Test coverage | ${covIcon} ${coverage} |`,
               '',
               allPassed
                 ? '**All checks passed** — ready to review 🚀'

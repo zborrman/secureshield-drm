@@ -12,10 +12,12 @@ Content Vault routes:
   GET    /vault/stream/{access_token}
 """
 import asyncio
+import re
 import uuid
 import time as _time
 import jwt as _jwt
 from datetime import datetime, timedelta
+from urllib.parse import quote as _url_quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File
 from fastapi.responses import StreamingResponse
@@ -419,11 +421,21 @@ async def vault_stream(
             yield plaintext[offset: offset + chunk_size]
             offset += chunk_size
 
+    # Build a safe Content-Disposition header.
+    # The filename* (RFC 5987) form handles arbitrary Unicode/special chars without
+    # header-injection risk.  The plain filename= fallback uses only ASCII-safe chars.
+    raw_name = record.filename or "file"
+    ascii_name = re.sub(r'[^\w.\-]', '_', raw_name)          # strip non-ASCII / control chars
+    encoded_name = _url_quote(raw_name, safe='')               # RFC 5987 percent-encoding
+    content_disposition = (
+        f"inline; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}"
+    )
+
     return StreamingResponse(
         generate(),
         media_type=record.content_type,
         headers={
-            "Content-Disposition": f'inline; filename="{record.filename}"',
+            "Content-Disposition": content_disposition,
             "Content-Length": str(len(plaintext)),
             "Cache-Control": "no-store",
         },

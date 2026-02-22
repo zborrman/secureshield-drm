@@ -1,15 +1,50 @@
 """
 Central configuration — all env-vars and tunable constants live here.
 Import from this module instead of calling os.getenv() scattered across the codebase.
+
+REQUIRED secrets (the app refuses to start without them — see validate_secrets()):
+  ADMIN_API_KEY          — master admin key (≥ 32 chars recommended)
+  OFFLINE_TOKEN_SECRET   — HS256 signing secret for offline JWTs (≥ 32 bytes REQUIRED)
+  VAULT_TOKEN_SECRET     — HS256 signing secret for vault-access JWTs (≥ 32 bytes REQUIRED)
+  SUPER_ADMIN_KEY        — super-admin key for /superadmin/* endpoints
 """
 import os
 
 # ── Authentication secrets ─────────────────────────────────────────────────────
+# Each secret is read independently from the environment.
+# There are NO derived fallbacks — a predictable fallback is a security vulnerability.
+# In development/test, set these in your .env file or conftest.py.
 ADMIN_API_KEY        = os.getenv("ADMIN_API_KEY", "")
-OFFLINE_TOKEN_SECRET = os.getenv("OFFLINE_TOKEN_SECRET", ADMIN_API_KEY + "-offline-v1")
-# Separate secret for vault access JWTs — prevents offline-token holders from forging vault tokens
-VAULT_TOKEN_SECRET   = os.getenv("VAULT_TOKEN_SECRET", OFFLINE_TOKEN_SECRET + "-vault-v1")
+OFFLINE_TOKEN_SECRET = os.getenv("OFFLINE_TOKEN_SECRET", "")
+VAULT_TOKEN_SECRET   = os.getenv("VAULT_TOKEN_SECRET", "")
 SUPER_ADMIN_KEY      = os.getenv("SUPER_ADMIN_KEY", "")
+
+
+def validate_secrets() -> None:
+    """Fail fast at startup if any required secret is missing or too short.
+
+    Call this from the FastAPI lifespan handler so the process exits immediately
+    with a clear error message rather than producing subtle security failures later.
+    HS256 requires a minimum key size of 256 bits (32 bytes).
+    """
+    errors: list[str] = []
+    _required = {
+        "ADMIN_API_KEY":        (ADMIN_API_KEY,        16),
+        "OFFLINE_TOKEN_SECRET": (OFFLINE_TOKEN_SECRET, 32),
+        "VAULT_TOKEN_SECRET":   (VAULT_TOKEN_SECRET,   32),
+        "SUPER_ADMIN_KEY":      (SUPER_ADMIN_KEY,      16),
+    }
+    for name, (value, min_len) in _required.items():
+        if not value:
+            errors.append(f"  {name} is not set")
+        elif len(value) < min_len:
+            errors.append(f"  {name} is too short ({len(value)} chars, minimum {min_len})")
+    if errors:
+        raise RuntimeError(
+            "SecureShield startup aborted — insecure configuration:\n"
+            + "\n".join(errors)
+            + "\n\nSet the missing environment variables and restart."
+        )
 
 # ── Session & bot-detection thresholds ────────────────────────────────────────
 BOT_THRESHOLD_MS           = 500   # first heartbeat faster than this (ms) → bot suspect

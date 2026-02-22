@@ -90,6 +90,16 @@ class OfflineTokenEntry(BaseModel):
 
 # ── Vault ──────────────────────────────────────────────────────────────────────
 
+class VaultAccessRequest(BaseModel):
+    """Sent as JSON body to POST /vault/access/{content_id}.
+
+    Keeping credentials in the request body (not query params) prevents them
+    from appearing in server access logs, CDN logs, and browser history.
+    """
+    invoice_id: str = Field(..., max_length=128)
+    license_key: str = Field(..., min_length=1, max_length=256)
+
+
 class VaultUploadResponse(BaseModel):
     content_id: str
     filename: Optional[str] = None

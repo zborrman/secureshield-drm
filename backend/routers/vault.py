@@ -24,6 +24,7 @@ from sqlalchemy.future import select
 
 from dependencies import get_db, require_admin
 from auth_utils import verify_license_key
+from schemas import VaultAccessRequest
 import models
 import geo_service
 import redis_service
@@ -283,11 +284,18 @@ async def vault_list_public(
 @router.post("/vault/access/{content_id}")
 async def vault_request_access(
     content_id: str,
-    invoice_id: str,
-    license_key: str,
+    body: VaultAccessRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
+    """Request a short-lived vault access token.
+
+    Credentials are passed in the JSON body (not query parameters) to prevent
+    the license key from appearing in server logs, CDN logs, or browser history.
+    """
+    invoice_id = body.invoice_id
+    license_key = body.license_key
+
     record = await db.get(models.VaultContent, content_id)
     if not record:
         raise HTTPException(status_code=404, detail="Content not found")

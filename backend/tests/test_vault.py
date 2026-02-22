@@ -84,10 +84,10 @@ async def test_vault_access_and_stream(db_session, admin_client, client, mock_s3
     assert lic.status_code == 201
     plain_key = lic.json()["plain_key_to_copy"]
 
-    # 3. Get access token
+    # 3. Get access token (credentials in JSON body, NOT query params)
     access_resp = await client.post(
         f"/vault/access/{content_id}",
-        params={"invoice_id": "inv-vault-1", "license_key": plain_key},
+        json={"invoice_id": "inv-vault-1", "license_key": plain_key},
     )
     assert access_resp.status_code == 200, access_resp.text
     access_token = access_resp.json()["access_token"]
@@ -220,7 +220,7 @@ async def test_restricted_content_blocks_unlinked_license(db_session, admin_clie
     # Eve's license must be denied
     access_resp = await client.post(
         f"/vault/access/{content_id}",
-        params={"invoice_id": "inv-other-1", "license_key": plain_key2},
+        json={"invoice_id": "inv-other-1", "license_key": plain_key2},
     )
     assert access_resp.status_code == 403
 
@@ -233,7 +233,7 @@ async def test_linked_license_can_access_restricted_content(db_session, admin_cl
 
     access_resp = await client.post(
         f"/vault/access/{content_id}",
-        params={"invoice_id": "inv-owner-2", "license_key": plain_key},
+        json={"invoice_id": "inv-owner-2", "license_key": plain_key},
     )
     assert access_resp.status_code == 200, access_resp.text
 
@@ -247,7 +247,7 @@ async def test_revoke_content_from_license(db_session, admin_client, client, moc
     # Confirm access works before revocation
     pre = await client.post(
         f"/vault/access/{content_id}",
-        params={"invoice_id": "inv-revoke-1", "license_key": plain_key},
+        json={"invoice_id": "inv-revoke-1", "license_key": plain_key},
     )
     assert pre.status_code == 200
 
@@ -259,6 +259,6 @@ async def test_revoke_content_from_license(db_session, admin_client, client, moc
     # Open content: same license should still work
     post = await client.post(
         f"/vault/access/{content_id}",
-        params={"invoice_id": "inv-revoke-1", "license_key": plain_key},
+        json={"invoice_id": "inv-revoke-1", "license_key": plain_key},
     )
     assert post.status_code == 200

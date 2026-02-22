@@ -20,13 +20,7 @@ from slowapi.errors import RateLimitExceeded
 from logging_config import setup_logging, get_logger
 from database import engine, Base
 import redis_service
-from config import (
-    CORS_ORIGINS,
-    ADMIN_API_KEY,
-    OFFLINE_TOKEN_SECRET,
-    VAULT_TOKEN_SECRET,
-    SUPER_ADMIN_KEY,
-)
+from config import CORS_ORIGINS, validate_secrets
 from rate_limit import limiter
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -135,26 +129,7 @@ app.include_router(tenant.router)
 @app.on_event("startup")
 async def startup() -> None:
     """Validate critical secrets, configure logging, and create DB tables."""
-    _problems: list[str] = []
-
-    if not ADMIN_API_KEY:
-        _problems.append("ADMIN_API_KEY is not set")
-    if len(OFFLINE_TOKEN_SECRET) < 32:
-        _problems.append(
-            f"OFFLINE_TOKEN_SECRET is too short ({len(OFFLINE_TOKEN_SECRET)} chars, need >=32)"
-        )
-    if len(VAULT_TOKEN_SECRET) < 32:
-        _problems.append(
-            f"VAULT_TOKEN_SECRET is too short ({len(VAULT_TOKEN_SECRET)} chars, need >=32)"
-        )
-    if not SUPER_ADMIN_KEY:
-        _problems.append("SUPER_ADMIN_KEY is not set")
-
-    if _problems:
-        msg = "Startup aborted — missing or weak secrets:\n  " + "\n  ".join(_problems)
-        logger.critical(msg)
-        raise RuntimeError(msg)
-
+    validate_secrets()   # raises RuntimeError with details if any secret is missing/weak
     logger.info("startup", extra={"status": "ok", "db": "creating_tables"})
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

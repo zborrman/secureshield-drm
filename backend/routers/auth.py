@@ -162,7 +162,7 @@ async def create_checkout(invoice_id: str):
 
 
 @router.post("/webhook/stripe")
-async def stripe_webhook(request: Request):
+async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature")
 
@@ -173,12 +173,47 @@ async def stripe_webhook(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid Stripe signature")
 
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-        invoice_id = session["metadata"].get("invoice_id")
-        await stripe_service.handle_payment_success(invoice_id)
+    event_id = event["id"]
+    event_type = event["type"]
 
-    return {"status": "success"}
+    # Idempotency: skip events that were already successfully processed
+    existing = await db.get(models.StripeWebhookEvent, event_id)
+    if existing and existing.status == "processed":
+        return {"status": "already_processed"}
+
+    # Write DLQ entry on first delivery
+    if not existing:
+        existing = models.StripeWebhookEvent(
+            id=event_id,
+            event_type=event_type,
+            payload=payload.decode("utf-8"),
+        )
+        db.add(existing)
+        await db.commit()
+        await db.refresh(existing)
+
+    if event_type == "checkout.session.completed":
+        session_obj = event["data"]["object"]
+        invoice_id = session_obj["metadata"].get("invoice_id")
+        existing.attempts += 1
+        existing.status = "processing"
+        await db.commit()
+        try:
+            await stripe_service.handle_payment_success(invoice_id)
+            existing.status = "processed"
+            existing.processed_at = datetime.utcnow()
+            existing.error = None
+        except Exception as exc:
+            existing.status = "failed"
+            existing.error = str(exc)[:1000]
+        await db.commit()
+    else:
+        # Event type we don't handle — mark processed immediately
+        existing.status = "processed"
+        existing.processed_at = datetime.utcnow()
+        await db.commit()
+
+    return {"status": existing.status}
 
 
 # ── Analytics (public-facing, called by the viewer) ──────────────────────────

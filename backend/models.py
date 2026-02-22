@@ -111,3 +111,23 @@ class LicenseContent(Base):
     license_id = Column(Integer, ForeignKey("licenses.id"), nullable=False, index=True)
     content_id = Column(String,  ForeignKey("vault_contents.id"), nullable=False, index=True)
     granted_at = Column(DateTime, default=datetime.utcnow)
+
+
+class StripeWebhookEvent(Base):
+    """Dead-letter queue for Stripe webhook events.
+
+    Every incoming event is written here before processing so that:
+    - Failed events can be retried via the admin API.
+    - Duplicate deliveries are detected (idempotency on Stripe event ID).
+    - Operators can audit what Stripe sent and when.
+    """
+    __tablename__ = "stripe_webhook_events"
+
+    id           = Column(String, primary_key=True)          # Stripe event ID (evt_xxx)
+    event_type   = Column(String, nullable=False)
+    payload      = Column(Text, nullable=False)               # raw JSON event payload
+    status       = Column(String, default="pending")          # pending | processing | processed | failed
+    error        = Column(Text, nullable=True)                # last error message (truncated to 1 000 chars)
+    attempts     = Column(Integer, default=0)
+    received_at  = Column(DateTime, default=datetime.utcnow)
+    processed_at = Column(DateTime, nullable=True)

@@ -10,6 +10,7 @@ Responsibilities of this file:
 """
 import time
 import uuid
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,6 +30,29 @@ logger = get_logger(__name__)
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 from routers import auth, admin, vault, superadmin, tenant
+
+
+# ── Lifespan ──────────────────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Single entry point for startup and shutdown logic.
+
+    Replaces the deprecated @app.on_event("startup") / ("shutdown") pattern.
+    FastAPI guarantees the code before `yield` runs before the first request,
+    and the code after `yield` runs after the last request.
+    """
+    # ── startup ──
+    validate_secrets()   # raises RuntimeError with details if any secret is missing/weak
+    logger.info("startup", extra={"status": "ok", "db": "creating_tables"})
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    yield  # application runs here
+
+    # ── shutdown ──
+    logger.info("shutdown", extra={"status": "closing_redis"})
+    await redis_service.close_redis()
 
 
 # ── Request-ID + access-log middleware ────────────────────────────────────────
@@ -95,6 +119,7 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 # Attach the limiter so slowapi can find it via app.state
@@ -124,18 +149,3 @@ app.include_router(superadmin.router)
 app.include_router(tenant.router)
 
 
-# ── Lifecycle ─────────────────────────────────────────────────────────────────
-
-@app.on_event("startup")
-async def startup() -> None:
-    """Validate critical secrets, configure logging, and create DB tables."""
-    validate_secrets()   # raises RuntimeError with details if any secret is missing/weak
-    logger.info("startup", extra={"status": "ok", "db": "creating_tables"})
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-
-@app.on_event("shutdown")
-async def shutdown() -> None:
-    logger.info("shutdown", extra={"status": "closing_redis"})
-    await redis_service.close_redis()

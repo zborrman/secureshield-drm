@@ -21,6 +21,8 @@ Admin-only routes (require X-Admin-Key):
   GET  /admin/anomalies/summary
   GET  /admin/gdpr/export/{invoice_id}
   DELETE /admin/gdpr/purge/{invoice_id}
+  GET  /admin/stripe/dlq
+  POST /admin/stripe/dlq/{event_id}/retry
 """
 import uuid
 import json
@@ -42,6 +44,7 @@ import models
 import geo_service
 import redis_service
 import anomaly_service
+import stripe_service
 from schemas import LicenseCreatedResponse, OfflineTokenIssued, AnomalyResponse
 from config import (
     ADMIN_API_KEY,
@@ -794,3 +797,80 @@ async def get_anomalies_summary(
         db, hours, min_score=0, skip_geo=skip_geo, tenant_id=None
     )
     return {"summary": summary, "top_findings": findings[:3]}
+
+
+# ── Stripe Dead-Letter Queue ───────────────────────────────────────────────────
+
+@router.get("/admin/stripe/dlq")
+async def get_stripe_dlq(
+    status: str = None,
+    limit: int = Query(default=50, le=500),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    """List Stripe webhook events from the dead-letter queue.
+
+    Filter by ?status=failed to see only events that need attention.
+    """
+    q = (
+        select(models.StripeWebhookEvent)
+        .order_by(models.StripeWebhookEvent.received_at.desc())
+        .limit(limit)
+    )
+    if status:
+        q = q.where(models.StripeWebhookEvent.status == status)
+    result = await db.execute(q)
+    events = result.scalars().all()
+    return [
+        {
+            "id": e.id,
+            "event_type": e.event_type,
+            "status": e.status,
+            "attempts": e.attempts,
+            "error": e.error,
+            "received_at": e.received_at.isoformat() + "Z",
+            "processed_at": e.processed_at.isoformat() + "Z" if e.processed_at else None,
+        }
+        for e in events
+    ]
+
+
+@router.post("/admin/stripe/dlq/{event_id}/retry", status_code=200)
+async def retry_stripe_event(
+    event_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    """Manually retry a failed (or pending) Stripe webhook event.
+
+    Parses the stored payload and re-invokes the appropriate handler.
+    Returns 409 if the event has already been processed successfully.
+    """
+    event = await db.get(models.StripeWebhookEvent, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    if event.status == "processed":
+        raise HTTPException(status_code=409, detail="Event already processed")
+
+    payload_dict = json.loads(event.payload)
+    event.attempts += 1
+    event.status = "processing"
+    await db.commit()
+
+    if payload_dict.get("type") == "checkout.session.completed":
+        session_obj = payload_dict["data"]["object"]
+        invoice_id = session_obj["metadata"].get("invoice_id")
+        try:
+            await stripe_service.handle_payment_success(invoice_id)
+            event.status = "processed"
+            event.processed_at = datetime.utcnow()
+            event.error = None
+        except Exception as exc:
+            event.status = "failed"
+            event.error = str(exc)[:1000]
+    else:
+        event.status = "processed"
+        event.processed_at = datetime.utcnow()
+
+    await db.commit()
+    return {"status": event.status, "attempts": event.attempts}

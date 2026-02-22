@@ -7,6 +7,8 @@ import asyncio
 # Use in-memory SQLite for tests — no PostgreSQL required locally.
 # Must be set BEFORE database.py / main.py are imported.
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./test_drm.db")
+# Disable rate limiting in tests — all test requests share "testclient" as the IP.
+os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
 
 # Must be set BEFORE main.py is imported — ADMIN_API_KEY is read at module level
 os.environ.setdefault("ADMIN_API_KEY", "test-admin-key")

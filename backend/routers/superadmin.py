@@ -5,25 +5,28 @@ Super-admin routes (require X-Super-Admin-Key):
   PATCH  /superadmin/tenants/{slug}
   DELETE /superadmin/tenants/{slug}
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from dependencies import get_db, require_super_admin
 from auth_utils import hash_license_key
+from rate_limit import limiter, SUPERADMIN_LIMIT
 import models
 
 router = APIRouter()
 
 
 @router.post("/superadmin/tenants", status_code=201)
+@limiter.limit(SUPERADMIN_LIMIT)
 async def create_tenant(
+    request: Request,
     name: str,
     slug: str,
     admin_key: str,
     plan: str = "starter",
-    max_licenses: int = 10,
-    max_vault_mb: int = 100,
+    max_licenses: int = Query(default=10, ge=1, le=100_000),
+    max_vault_mb: int = Query(default=100, ge=1, le=51_200),   # max 50 GB
     db: AsyncSession = Depends(get_db),
     _: None = Depends(require_super_admin),
 ):
@@ -87,8 +90,8 @@ async def list_tenants(
 async def update_tenant(
     slug: str,
     plan: str = None,
-    max_licenses: int = None,
-    max_vault_mb: int = None,
+    max_licenses: int = Query(default=None, ge=1, le=100_000),
+    max_vault_mb: int = Query(default=None, ge=1, le=51_200),
     is_active: bool = None,
     db: AsyncSession = Depends(get_db),
     _: None = Depends(require_super_admin),

@@ -12,13 +12,38 @@ VAULT_TOKEN_SECRET   = os.getenv("VAULT_TOKEN_SECRET", OFFLINE_TOKEN_SECRET + "-
 SUPER_ADMIN_KEY      = os.getenv("SUPER_ADMIN_KEY", "")
 
 # ── Session & bot-detection thresholds ────────────────────────────────────────
-BOT_THRESHOLD_MS          = 500   # first heartbeat faster than this (ms) → bot suspect
-SESSION_ACTIVE_MINUTES    = 5     # sessions silent for >5 min are considered expired
-BRUTE_FORCE_WINDOW_MINUTES = 15   # sliding window for failed-attempt counting
-BRUTE_FORCE_MAX_FAILS      = 5    # max failures within the window before IP is blocked
+BOT_THRESHOLD_MS           = 500   # first heartbeat faster than this (ms) → bot suspect
+SESSION_ACTIVE_MINUTES     = 5     # sessions silent for >5 min are considered expired
+BRUTE_FORCE_WINDOW_MINUTES = 15    # sliding window for failed-attempt counting
+BRUTE_FORCE_MAX_FAILS      = 5     # max failures within the window before IP is blocked
 
 # ── Content Vault ──────────────────────────────────────────────────────────────
-VAULT_ACCESS_TOKEN_MINUTES = 5    # short-lived vault access JWTs
+VAULT_ACCESS_TOKEN_MINUTES = 5     # short-lived vault access JWTs (minutes)
+
+# Hard size cap enforced before encryption — prevents DoS via huge uploads.
+MAX_UPLOAD_MB    = int(os.getenv("MAX_UPLOAD_MB", "500"))
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+
+# Allowed MIME types for *tenant* vault uploads.
+# Admin uploads are unrestricted (admins are trusted operators).
+ALLOWED_VAULT_MIME: frozenset = frozenset({
+    "application/pdf",
+    "application/zip",
+    "application/octet-stream",
+    "video/mp4",
+    "video/webm",
+    "audio/mpeg",
+    "audio/mp4",
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "text/plain",
+})
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+# Strip whitespace from each origin so "http://a.com, http://b.com" parses correctly.
+CORS_ORIGINS: list[str] = [
+    o.strip()
+    for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+    if o.strip()
+]

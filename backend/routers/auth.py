@@ -31,6 +31,7 @@ from config import (
     SESSION_ACTIVE_MINUTES,
     BOT_THRESHOLD_MS,
 )
+from rate_limit import limiter, ANALYTICS_LIMIT
 
 router = APIRouter()
 
@@ -183,6 +184,7 @@ async def stripe_webhook(request: Request):
 # ── Analytics (public-facing, called by the viewer) ──────────────────────────
 
 @router.post("/analytics/start", status_code=201)
+@limiter.limit(ANALYTICS_LIMIT)
 async def analytics_start(
     invoice_id: str,
     content_id: str,

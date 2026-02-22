@@ -32,6 +32,8 @@ from config import (
     VAULT_TOKEN_SECRET,
     VAULT_ACCESS_TOKEN_MINUTES,
     SESSION_ACTIVE_MINUTES,
+    MAX_UPLOAD_BYTES,
+    MAX_UPLOAD_MB,
 )
 
 router = APIRouter()
@@ -47,6 +49,11 @@ async def vault_upload(
     _: None = Depends(require_admin),
 ):
     raw = await file.read()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large (max {MAX_UPLOAD_MB} MB per upload)",
+        )
     content_id = str(uuid.uuid4())
     s3_key = f"vault/{content_id}.enc"
 

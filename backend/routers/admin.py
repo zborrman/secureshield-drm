@@ -48,6 +48,7 @@ from config import (
     BRUTE_FORCE_MAX_FAILS,
 )
 from sqlalchemy import text
+from rate_limit import limiter, ADMIN_WRITE_LIMIT
 
 router = APIRouter()
 
@@ -66,10 +67,12 @@ async def health_check(db: AsyncSession = Depends(get_db)):
 # ── Licenses ───────────────────────────────────────────────────────────────────
 
 @router.post("/admin/create-license", status_code=201)
+@limiter.limit(ADMIN_WRITE_LIMIT)
 async def create_license(
+    request: Request,
     invoice_id: str,
     owner_id: str,
-    max_sessions: int = 1,
+    max_sessions: int = Query(default=1, ge=1, le=100),
     allowed_countries: str = "",
     is_paid: bool = False,
     db: AsyncSession = Depends(get_db),
@@ -454,7 +457,7 @@ async def get_leak_report(
 @router.post("/admin/offline-token", status_code=201)
 async def issue_offline_token(
     invoice_id: str,
-    hours: int = 24,
+    hours: int = Query(default=24, ge=1, le=168),
     device_hint: str = "",
     db: AsyncSession = Depends(get_db),
     _: None = Depends(require_admin),

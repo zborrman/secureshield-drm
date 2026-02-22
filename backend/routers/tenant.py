@@ -20,7 +20,7 @@ import jwt as _jwt
 from datetime import datetime, timedelta
 import time as _time
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
@@ -28,7 +28,8 @@ from dependencies import get_db, get_current_tenant
 from auth_utils import hash_license_key
 import models
 import vault_service
-from config import OFFLINE_TOKEN_SECRET
+from config import OFFLINE_TOKEN_SECRET, MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, ALLOWED_VAULT_MIME
+from rate_limit import limiter, TENANT_WRITE_LIMIT
 from routers.admin import _run_anomaly_analysis
 
 router = APIRouter()
@@ -37,10 +38,12 @@ router = APIRouter()
 # ── Licenses ────────────────────────────────────────────────────────────────
 
 @router.post("/tenant/licenses", status_code=201)
+@limiter.limit(TENANT_WRITE_LIMIT)
 async def tenant_create_license(
+    request: Request,
     invoice_id: str,
     owner_id: str,
-    max_sessions: int = 1,
+    max_sessions: int = Query(default=1, ge=1, le=100),
     allowed_countries: str = "",
     db: AsyncSession = Depends(get_db),
     tenant: models.Tenant = Depends(get_current_tenant),
@@ -153,7 +156,7 @@ async def tenant_alerts(
 @router.post("/tenant/offline-token", status_code=201)
 async def tenant_issue_offline_token(
     invoice_id: str,
-    hours: int = 24,
+    hours: int = Query(default=24, ge=1, le=168),
     device_hint: str = "",
     db: AsyncSession = Depends(get_db),
     tenant: models.Tenant = Depends(get_current_tenant),
@@ -257,12 +260,25 @@ async def tenant_vault_upload(
     tenant: models.Tenant = Depends(get_current_tenant),
 ):
     """Upload encrypted content to this tenant's vault partition."""
+    # Enforce hard size cap before reading the full file body
+    raw = await file.read()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large (max {MAX_UPLOAD_MB} MB per upload)",
+        )
+    # Tenant uploads are restricted to known safe MIME types
+    content_type = (file.content_type or "application/octet-stream").split(";")[0].strip()
+    if content_type not in ALLOWED_VAULT_MIME:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported media type: {content_type}",
+        )
     quota_result = await db.execute(
         select(models.VaultContent).where(models.VaultContent.tenant_id == tenant.id)
     )
     used_bytes = sum(r.size_bytes for r in quota_result.scalars().all())
     max_bytes = tenant.max_vault_mb * 1024 * 1024
-    raw = await file.read()
     if used_bytes + len(raw) > max_bytes:
         raise HTTPException(
             status_code=403,

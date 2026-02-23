@@ -1,0 +1,65 @@
+groups:
+  - name: secureshield.drm
+    interval: 30s
+    rules:
+
+      # ── 5xx error rate > 5% over 5 minutes ───────────────────────────────────
+      # prometheus-fastapi-instrumentator exposes http_request_duration_seconds
+      # (histogram), NOT http_requests_total.  Use _count for rate queries.
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum(rate(http_request_duration_seconds_count{status=~"5.."}[5m]))
+            /
+            sum(rate(http_request_duration_seconds_count[5m]))
+          ) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High 5xx error rate on SecureShield backend"
+          description: >
+            HTTP 5xx responses exceed 5% of total traffic over the last 5 minutes
+            (current: {{ $value | humanizePercentage }}).
+
+      # ── Rate-limited request spike ────────────────────────────────────────────
+      - alert: RateLimitedRequestsSpike
+        expr: |
+          rate(drm_license_verifications_total{status="rate_limited"}[5m]) * 60 > 10
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Spike in rate-limited license verification attempts"
+          description: >
+            More than 10 rate-limited license checks per minute for at least 1 minute.
+            Possible brute-force campaign. Current rate: {{ $value | humanize }}/min.
+
+      # ── Redis cache appears unreachable ────────────────────────────────────────
+      # Fires when zero cache activity (hits+misses) while the API is serving traffic.
+      - alert: RedisCacheUnavailable
+        expr: |
+          (
+            increase(drm_redis_cache_hits_total[2m])
+            + increase(drm_redis_cache_misses_total[2m])
+          ) == 0
+          and
+          sum(rate(http_request_duration_seconds_count[2m])) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis cache appears unreachable"
+          description: >
+            Zero cache hits or misses in 2 minutes while the API is receiving traffic.
+            The circuit breaker may be open. Check Redis health.
+
+      # ── Backend scrape target down ────────────────────────────────────────────
+      - alert: BackendDown
+        expr: up{job="secureshield-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SecureShield backend is unreachable"
+          description: "Prometheus cannot scrape /metrics from the backend for 1+ minute."

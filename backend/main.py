@@ -160,3 +160,25 @@ Instrumentator(
     should_group_status_codes=False,
     should_instrument_requests_inprogress=False,
 ).instrument(app).expose(app, include_in_schema=False)
+
+# ── OpenTelemetry tracing (opt-in via OTEL_ENABLED=true) ──────────────────────
+# When OTEL_ENABLED is unset or "false" the OTel packages are never imported —
+# zero overhead on the hot path.  Set OTEL_ENDPOINT to point at a Jaeger or
+# any OTLP-compatible collector (default: http://localhost:4317).
+import os as _os
+
+if _os.getenv("OTEL_ENABLED", "false").lower() == "true":
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+    _otel_endpoint = _os.getenv("OTEL_ENDPOINT", "http://localhost:4317")
+    _provider = TracerProvider()
+    _provider.add_span_processor(
+        BatchSpanProcessor(OTLPSpanExporter(endpoint=_otel_endpoint, insecure=True))
+    )
+    trace.set_tracer_provider(_provider)
+    FastAPIInstrumentor.instrument_app(app)
+    logger.info("otel_enabled", extra={"endpoint": _otel_endpoint})

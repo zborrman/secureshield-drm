@@ -27,6 +27,16 @@ import os
 import time
 from logging_config import get_logger
 from redis.asyncio import Redis, RedisError
+from prometheus_client import Counter
+
+_cache_hits = Counter(
+    "drm_redis_cache_hits_total",
+    "Number of Redis cache lookups that returned a value",
+)
+_cache_misses = Counter(
+    "drm_redis_cache_misses_total",
+    "Number of Redis cache lookups that returned None (key absent)",
+)
 
 logger = get_logger(__name__)
 
@@ -285,7 +295,11 @@ async def cache_get(key: str) -> dict | None:
         r = await get_redis()
         raw = await r.get(key)
         _circuit.record_success()
-        return json.loads(raw) if raw else None
+        if raw is not None:
+            _cache_hits.inc()
+            return json.loads(raw)
+        _cache_misses.inc()
+        return None
     except (RedisError, OSError) as exc:
         _circuit.record_failure()
         logger.error("redis_error", extra={"op": "cache_get", "key": key, "error": str(exc)})

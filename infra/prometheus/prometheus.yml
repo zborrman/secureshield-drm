@@ -1,0 +1,27 @@
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+  external_labels:
+    environment: "docker-compose"
+
+rule_files:
+  - "/etc/prometheus/alerts.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - "alertmanager:9093"
+
+scrape_configs:
+  - job_name: "secureshield-backend"
+    static_configs:
+      - targets:
+          - "backend:8000"
+    metrics_path: "/metrics"
+    scrape_timeout: 5s
+
+  - job_name: "prometheus"
+    static_configs:
+      - targets:
+          - "localhost:9090"

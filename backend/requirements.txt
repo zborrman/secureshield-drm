@@ -22,3 +22,7 @@ alembic>=1.13.0
 slowapi>=0.1.9
 tenacity>=8.2.0
 prometheus-fastapi-instrumentator>=0.9.1
+opentelemetry-sdk>=1.22.0
+opentelemetry-instrumentation-fastapi>=0.44b0
+opentelemetry-exporter-otlp-proto-grpc>=1.22.0
+pyyaml>=6.0

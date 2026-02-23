@@ -12,10 +12,12 @@ import hmac as _hmac
 import stripe
 import jwt as _jwt
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from prometheus_client import Counter
 
 from dependencies import get_db, log_attempt
 from auth_utils import verify_license_key
@@ -35,6 +37,13 @@ from rate_limit import limiter, ANALYTICS_LIMIT
 
 router = APIRouter()
 
+# Custom application-level metric — scraped by Prometheus via GET /metrics
+_verify_counter = Counter(
+    "drm_license_verifications_total",
+    "License verification attempts by outcome",
+    ["status"],  # labels: success | failure | rate_limited
+)
+
 
 @router.post("/verify-license")
 async def verify(
@@ -46,10 +55,25 @@ async def verify(
     client_ip = request.client.host
     user_agent = request.headers.get("user-agent", "unknown")
 
-    result = await db.execute(
-        select(models.License).where(models.License.invoice_id == invoice_id)
-    )
-    license_record = result.scalars().first()
+    # ── License lookup: check Redis cache before hitting the DB ──────────────
+    # Only paid licenses are cached — unpaid licenses are in a transient state
+    # (awaiting payment) and should always be read fresh from the DB so that
+    # activation via Stripe propagates immediately without a cache wait.
+    cached = await redis_service.cache_get(f"lic:{invoice_id}")
+    if cached:
+        license_record = SimpleNamespace(**cached)
+    else:
+        result = await db.execute(
+            select(models.License).where(models.License.invoice_id == invoice_id)
+        )
+        license_record = result.scalars().first()
+        if license_record and license_record.is_paid:
+            await redis_service.cache_set(f"lic:{invoice_id}", {
+                "is_paid":           license_record.is_paid,
+                "license_key":       license_record.license_key,
+                "allowed_countries": license_record.allowed_countries,
+                "owner_id":          license_record.owner_id,
+            })
 
     # Brute-force protection: sliding window — only count failures within the last N minutes
     brute_window = datetime.utcnow() - timedelta(minutes=BRUTE_FORCE_WINDOW_MINUTES)
@@ -62,6 +86,7 @@ async def verify(
     )
     if len(recent_fails.all()) >= BRUTE_FORCE_MAX_FAILS:
         await log_attempt(db, invoice_id, client_ip, False, user_agent)
+        _verify_counter.labels(status="rate_limited").inc()
         raise HTTPException(
             status_code=429,
             detail=f"Too many failed attempts. Try again in {BRUTE_FORCE_WINDOW_MINUTES} minutes.",
@@ -91,8 +116,10 @@ async def verify(
     await log_attempt(db, invoice_id, client_ip, success, user_agent)
 
     if not success:
+        _verify_counter.labels(status="failure").inc()
         raise HTTPException(status_code=403, detail="Invalid Key")
 
+    _verify_counter.labels(status="success").inc()
     return {"status": "success", "fingerprint": generate_user_fingerprint(license_record.owner_id)}
 
 

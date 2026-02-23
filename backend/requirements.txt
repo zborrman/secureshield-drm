@@ -21,3 +21,4 @@ aiosqlite>=0.19.0
 alembic>=1.13.0
 slowapi>=0.1.9
 tenacity>=8.2.0
+prometheus-fastapi-instrumentator>=0.9.1

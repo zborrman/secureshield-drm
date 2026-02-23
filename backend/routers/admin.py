@@ -32,7 +32,7 @@ import secrets as _secrets
 import jwt as _jwt
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -166,18 +166,33 @@ async def list_licenses(
 
 @router.get("/admin/audit-log")
 async def get_audit_log(
+    before_id: int | None = None,
     skip: int = 0,
     limit: int = Query(default=100, le=1000),
     db: AsyncSession = Depends(get_db),
     _: None = Depends(require_admin),
+    response: Response = None,
 ):
-    result = await db.execute(
-        select(models.AuditLog)
-        .order_by(models.AuditLog.timestamp.desc())
-        .offset(skip)
-        .limit(limit)
-    )
-    return result.scalars().all()
+    """List audit log entries, newest first.
+
+    Cursor pagination (preferred for large tables):
+      Pass `before_id` (the last ID from the previous page) to fetch the next page.
+      Response header `X-Next-Cursor` contains the ID to use as `before_id` on the
+      next call.  O(log N) via the primary-key index — avoids full-table scans.
+
+    Legacy offset pagination (backward compat):
+      Omit `before_id` and use `skip` as usual.
+    """
+    q = select(models.AuditLog).order_by(models.AuditLog.id.desc()).limit(limit)
+    if before_id is not None:
+        q = q.where(models.AuditLog.id < before_id)
+    else:
+        q = q.offset(skip)
+    result = await db.execute(q)
+    rows = result.scalars().all()
+    if rows and response is not None:
+        response.headers["X-Next-Cursor"] = str(rows[-1].id)
+    return rows
 
 
 @router.get("/admin/alerts")
@@ -205,18 +220,24 @@ async def get_alerts(
 
 @router.get("/admin/analytics")
 async def get_analytics(
+    before_id: int | None = None,
     skip: int = 0,
     limit: int = Query(default=50, le=1000),
     db: AsyncSession = Depends(get_db),
     _: None = Depends(require_admin),
+    response: Response = None,
 ):
-    result = await db.execute(
-        select(models.ViewAnalytics)
-        .order_by(models.ViewAnalytics.start_time.desc())
-        .offset(skip)
-        .limit(limit)
-    )
-    return result.scalars().all()
+    """List viewing sessions, newest first.  Supports cursor pagination via `before_id`."""
+    q = select(models.ViewAnalytics).order_by(models.ViewAnalytics.id.desc()).limit(limit)
+    if before_id is not None:
+        q = q.where(models.ViewAnalytics.id < before_id)
+    else:
+        q = q.offset(skip)
+    result = await db.execute(q)
+    rows = result.scalars().all()
+    if rows and response is not None:
+        response.headers["X-Next-Cursor"] = str(rows[-1].id)
+    return rows
 
 
 @router.delete("/admin/analytics/{session_id}")
@@ -339,6 +360,8 @@ async def update_geo_restriction(
         raise HTTPException(status_code=404, detail="License not found")
     lic.allowed_countries = allowed_countries.upper().strip() or None
     await db.commit()
+    # Invalidate cache so the next verify-license call reads the updated geo restriction.
+    await redis_service.cache_delete(f"lic:{invoice_id}")
     return {"invoice_id": invoice_id, "allowed_countries": lic.allowed_countries}
 
 

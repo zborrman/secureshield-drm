@@ -2,6 +2,7 @@ import stripe
 import os
 from database import SessionLocal
 import models
+import redis_service
 from sqlalchemy.future import select
 from logging_config import get_logger
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -34,6 +35,9 @@ async def handle_payment_success(invoice_id: str) -> None:
         if license_record:
             license_record.is_paid = True
             await db.commit()
+            # Invalidate the license cache so the next verify-license call reads
+            # the updated is_paid=True from the DB instead of the stale cached value.
+            await redis_service.cache_delete(f"lic:{invoice_id}")
             logger.info("stripe_payment_success", extra={"invoice_id": invoice_id})
         else:
             logger.warning("stripe_payment_no_license", extra={"invoice_id": invoice_id})

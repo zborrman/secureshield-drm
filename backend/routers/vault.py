@@ -3,6 +3,7 @@ Content Vault routes:
   POST   /admin/vault/upload
   GET    /admin/vault/contents
   DELETE /admin/vault/{content_id}
+  GET    /admin/vault/{content_id}/presign
   POST   /admin/licenses/{invoice_id}/content/{content_id}
   DELETE /admin/licenses/{invoice_id}/content/{content_id}
   GET    /admin/licenses/{invoice_id}/content
@@ -109,6 +110,35 @@ async def vault_list_admin(
         }
         for r in result.scalars().all()
     ]
+
+
+@router.get("/admin/vault/{content_id}/presign")
+async def vault_presign_download(
+    content_id: str,
+    expires_in: int = Query(default=300, ge=60, le=3600),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    """Generate a short-lived presigned S3 GET URL for the encrypted vault blob.
+
+    Useful for: admin backup workflows, forensic audits, and off-box archival.
+    The returned URL provides direct access to the *encrypted* S3 object — the
+    server-side AES-256-GCM decryption key is NOT included, so the data cannot
+    be read without the Vault master key.
+    """
+    row = await db.get(models.VaultContent, content_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Content not found")
+    url = await asyncio.to_thread(
+        vault_service.generate_presigned_url, row.s3_key, expires_in
+    )
+    return {
+        "url": url,
+        "expires_in": expires_in,
+        "content_id": content_id,
+        "filename": row.filename,
+        "note": "Encrypted blob — server-side decryption key required to read",
+    }
 
 
 @router.delete("/admin/vault/{content_id}", status_code=200)

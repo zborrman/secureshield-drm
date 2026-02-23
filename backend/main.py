@@ -148,4 +148,15 @@ app.include_router(vault.router)
 app.include_router(superadmin.router)
 app.include_router(tenant.router)
 
+# ── Prometheus metrics ─────────────────────────────────────────────────────────
+# Exposes GET /metrics in Prometheus text format.
+# In production, restrict this endpoint to internal networks via a reverse-proxy
+# rule (e.g. nginx allow 10.0.0.0/8; deny all;) so scrapers can reach it but
+# the public internet cannot.
 
+from prometheus_fastapi_instrumentator import Instrumentator  # noqa: E402
+
+Instrumentator(
+    should_group_status_codes=False,
+    should_instrument_requests_inprogress=False,
+).instrument(app).expose(app, include_in_schema=False)

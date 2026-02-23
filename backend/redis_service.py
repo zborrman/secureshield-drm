@@ -254,3 +254,52 @@ async def get_live_sessions() -> list[dict]:
         _circuit.record_failure()
         logger.error("redis_error", extra={"op": "get_live_sessions", "error": str(exc)})
         return []
+
+
+# ── Generic key-value cache ────────────────────────────────────────────────────
+# Used for caching license records to skip repeated DB SELECTs on the hot
+# verify-license path.  Keys use a `lic:{invoice_id}` prefix to avoid
+# collisions with session keys.
+
+_CACHE_TTL = 60  # seconds before a cached license record is considered stale
+
+
+async def cache_set(key: str, value: dict, ttl: int = _CACHE_TTL) -> None:
+    """Store a dict in Redis as JSON with a TTL.  No-op when circuit is open."""
+    if _circuit.is_open:
+        return
+    try:
+        r = await get_redis()
+        await r.set(key, json.dumps(value), ex=ttl)
+        _circuit.record_success()
+    except (RedisError, OSError) as exc:
+        _circuit.record_failure()
+        logger.error("redis_error", extra={"op": "cache_set", "key": key, "error": str(exc)})
+
+
+async def cache_get(key: str) -> dict | None:
+    """Return a cached dict or None on miss / circuit-open / error."""
+    if _circuit.is_open:
+        return None
+    try:
+        r = await get_redis()
+        raw = await r.get(key)
+        _circuit.record_success()
+        return json.loads(raw) if raw else None
+    except (RedisError, OSError) as exc:
+        _circuit.record_failure()
+        logger.error("redis_error", extra={"op": "cache_get", "key": key, "error": str(exc)})
+        return None
+
+
+async def cache_delete(key: str) -> None:
+    """Invalidate a cache entry.  No-op when circuit is open."""
+    if _circuit.is_open:
+        return
+    try:
+        r = await get_redis()
+        await r.delete(key)
+        _circuit.record_success()
+    except (RedisError, OSError) as exc:
+        _circuit.record_failure()
+        logger.error("redis_error", extra={"op": "cache_delete", "key": key, "error": str(exc)})

@@ -49,17 +49,22 @@ impl SecureViewer {
     /// Функция "Controlled Viewing": дешифрует данные только если ключ прошел проверку.
     #[wasm_bindgen]
     pub fn decrypt_content(&self, encrypted_data: Vec<u8>) -> Result<Vec<u8>, JsValue> {
-        if !self.is_verified {
-            return Err(JsValue::from_str("ACCESS_DENIED_SECURE_ENCLAVE"));
-        }
-
-        // Простая XOR-дешифровка (в реальности здесь будет AES-GCM)
-        let decrypted = encrypted_data.iter()
-            .map(|&b| b ^ 0xFF)
-            .collect();
-
-        Ok(decrypted)
+        decrypt_inner(self.is_verified, encrypted_data)
+            .map_err(JsValue::from_str)
     }
+}
+
+/// Platform-neutral core of decrypt_content.
+///
+/// Returns `Err(&str)` instead of `Err(JsValue)` so that native unit tests
+/// can call this without hitting the wasm-bindgen JsValue panic.
+/// The public #[wasm_bindgen] method wraps this and converts the error.
+fn decrypt_inner(is_verified: bool, encrypted_data: Vec<u8>) -> Result<Vec<u8>, &'static str> {
+    if !is_verified {
+        return Err("ACCESS_DENIED_SECURE_ENCLAVE");
+    }
+    // XOR-дешифровка (placeholder — в продакшне AES-GCM)
+    Ok(encrypted_data.iter().map(|&b| b ^ 0xFF).collect())
 }
 
 // ─────────────────────────────────────────────
@@ -73,9 +78,11 @@ mod tests {
 
     #[test]
     fn test_decrypt_denied_when_unverified() {
-        let viewer = SecureViewer::new();
-        let result = viewer.decrypt_content(vec![0xFF, 0xAA]);
+        // Use decrypt_inner directly: calling viewer.decrypt_content() on non-wasm32
+        // would trigger JsValue::from_str() which panics outside the browser.
+        let result = decrypt_inner(false, vec![0xFF, 0xAA]);
         assert!(result.is_err(), "Unverified viewer must not decrypt");
+        assert_eq!(result.unwrap_err(), "ACCESS_DENIED_SECURE_ENCLAVE");
     }
 
     #[test]

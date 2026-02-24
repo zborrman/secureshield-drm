@@ -126,10 +126,16 @@ jobs:
         id: pytest
         env:
           DATABASE_URL: sqlite+aiosqlite:///./test_drm.db
+          RATE_LIMIT_ENABLED: "false"
           ADMIN_API_KEY: test-admin-key-for-ci-not-production
           OFFLINE_TOKEN_SECRET: test-offline-secret-for-jwt-hs256!
           VAULT_TOKEN_SECRET: test-vault-token-secret-for-jwt32!
           SUPER_ADMIN_KEY: test-super-admin-key-ci
+          VAULT_MASTER_KEY: dGVzdF92YXVsdF8zMmJ5dGVfa2V5X2Zvcl90ZXN0cyE=
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          AWS_DEFAULT_REGION: us-east-1
+          S3_BUCKET: test-secureshield-vault
         run: |
           cd backend
           pytest tests/ -v --tb=short \

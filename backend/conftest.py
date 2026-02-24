@@ -40,10 +40,15 @@ from sqlalchemy.pool import NullPool
 from database import Base, DATABASE_URL
 from main import app
 from dependencies import get_db
+import stripe_service as _stripe_service
 
 # NullPool: no connection caching — each call gets a fresh connection.
 # This prevents "another operation is in progress" when pytest-asyncio
 # creates a new event loop per test while the engine holds old connections.
+# Critical for PostgreSQL (asyncpg): the default AsyncAdaptedQueuePool caches
+# connections that are event-loop-bound. pytest-asyncio 1.x gives each test
+# its own event loop, so a pooled connection from test N-1's loop raises
+# RuntimeError in test N's loop. NullPool avoids this entirely.
 test_engine = create_async_engine(DATABASE_URL, poolclass=NullPool)
 TestSessionLocal = sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -56,6 +61,12 @@ async def _get_test_db():
 
 # Override FastAPI's get_db dependency for ALL tests
 app.dependency_overrides[get_db] = _get_test_db
+
+# stripe_service.handle_payment_success() creates sessions via database.SessionLocal
+# (the app's default QueuePool engine), NOT through FastAPI's get_db dependency.
+# When called directly in tests it bypasses the dependency override above, so we
+# patch its module-level SessionLocal to also use the NullPool test factory.
+_stripe_service.SessionLocal = TestSessionLocal
 
 
 @pytest_asyncio.fixture(autouse=True)

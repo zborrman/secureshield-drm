@@ -84,8 +84,26 @@ async def fake_redis():
 
 
 @pytest.fixture(scope="session")
-def event_loop_policy():
-    return asyncio.DefaultEventLoopPolicy()
+def event_loop():
+    """
+    Session-scoped event loop — all async tests share a single loop.
+
+    Even with NullPool, SQLAlchemy's AsyncEngine holds loop-bound internal
+    asyncio state (Conditions, Events) that is bound to whichever loop first
+    uses the engine.  pytest-asyncio's default function-scoped loops mean each
+    test runs in a NEW loop, so later tests see asyncpg Futures from a previous
+    loop and raise "Future attached to a different loop" during
+    AsyncSession.close() → asyncio.shield().
+
+    Providing a session-scoped event_loop forces every async test function and
+    every async fixture to run in this single loop, eliminating the mismatch.
+
+    Deprecated in pytest-asyncio 0.21 but still functional through 0.24+
+    (produces a DeprecationWarning, which does not fail CI).
+    """
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
 
 
 @pytest_asyncio.fixture(scope="function")

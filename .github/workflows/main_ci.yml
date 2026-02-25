@@ -124,10 +124,24 @@ jobs:
     needs: [ wasm-tests, backend-tests ]
     runs-on: ubuntu-latest
 
+    # Job-level env — inherited by ALL steps and by uvicorn (started via &).
+    # Step-level env only survives for that step's shell; background processes
+    # that outlive the step need the vars set here so they remain in effect.
+    env:
+      DATABASE_URL: postgresql+asyncpg://user:password@localhost:5432/main_db
+      RATE_LIMIT_ENABLED: "false"
+      ADMIN_API_KEY: test-admin-key-for-ci-not-production
+      OFFLINE_TOKEN_SECRET: test-offline-secret-for-jwt-hs256!
+      VAULT_TOKEN_SECRET: test-vault-token-secret-for-jwt32!
+      SUPER_ADMIN_KEY: test-super-admin-key-ci
+      VAULT_MASTER_KEY: dGVzdF92YXVsdF8zMmJ5dGVfa2V5X2Zvcl90ZXN0cyE=
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+      S3_BUCKET: test-secureshield-vault
+
     # Managed services — GitHub Actions starts these containers and waits for
     # them to pass their health checks before running any steps.
-    # Using services (instead of docker compose) avoids the 3–5 min image-build
-    # penalty on cold runners and matches the approach in backend-tests.
     services:
       postgres:
         image: postgres:15-alpine
@@ -171,33 +185,24 @@ jobs:
       - name: Install backend dependencies
         run: cd backend && pip install -r requirements.txt
 
-      # Start uvicorn in the background.  No image build — starts in ~3 s.
-      # REDIS_URL defaults to redis://localhost:6379/0 in redis_service.py so
-      # it does not need to be set explicitly here.
+      # Start uvicorn in the background; log to file for diagnostics.
+      # REDIS_URL defaults to redis://localhost:6379/0 in redis_service.py.
       - name: Start backend API
-        env:
-          DATABASE_URL: postgresql+asyncpg://user:password@localhost:5432/main_db
-          RATE_LIMIT_ENABLED: "false"
-          ADMIN_API_KEY: test-admin-key-for-ci-not-production
-          OFFLINE_TOKEN_SECRET: test-offline-secret-for-jwt-hs256!
-          VAULT_TOKEN_SECRET: test-vault-token-secret-for-jwt32!
-          SUPER_ADMIN_KEY: test-super-admin-key-ci
-          VAULT_MASTER_KEY: dGVzdF92YXVsdF8zMmJ5dGVfa2V5X2Zvcl90ZXN0cyE=
-          AWS_ACCESS_KEY_ID: test
-          AWS_SECRET_ACCESS_KEY: test
-          AWS_DEFAULT_REGION: us-east-1
-          S3_BUCKET: test-secureshield-vault
         run: |
           cd backend
-          uvicorn main:app --host 0.0.0.0 --port 8001 &
+          uvicorn main:app --host 0.0.0.0 --port 8001 > /tmp/uvicorn.log 2>&1 &
           echo $! > /tmp/uvicorn.pid
+          echo "uvicorn PID: $(cat /tmp/uvicorn.pid)"
 
+      # Print current health on every poll; dump full uvicorn log on timeout.
       - name: Wait for API to be healthy
         run: |
           timeout 60 bash -c \
             'until curl -sf http://localhost:8001/health | grep -q healthy; do
-               echo "waiting for API..."; sleep 2
-             done'
+               echo "response: $(curl -s http://localhost:8001/health 2>&1 || echo no-response)"
+               sleep 3
+             done' \
+          || { echo "=== TIMEOUT — uvicorn log:"; cat /tmp/uvicorn.log; exit 1; }
 
       - name: Set up Node.js 20
         uses: actions/setup-node@v4

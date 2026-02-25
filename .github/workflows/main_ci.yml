@@ -308,6 +308,9 @@ jobs:
             cat /tmp/uvicorn.log 2>/dev/null || echo "(no log)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY" || true
+          # Emit a GitHub annotation so the last health response is visible
+          # in the Checks UI and via the annotations API without auth.
+          echo "::error::Health wait timed out. Last STATUS=${STATUS} BODY=${BODY}"
           echo "=== TIMEOUT — final uvicorn log:"; cat /tmp/uvicorn.log; exit 1
 
       - name: Set up Node.js 20

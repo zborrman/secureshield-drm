@@ -250,6 +250,15 @@ jobs:
           NEXT_PUBLIC_API_URL: http://localhost:8001
         run: cd frontend && npx playwright test --reporter=github
 
+      - name: Upload uvicorn startup log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uvicorn-startup-log
+          path: /tmp/uvicorn.log
+          retention-days: 7
+          if-no-files-found: warn
+
       - name: Upload Playwright report on failure
         if: failure()
         uses: actions/upload-artifact@v4

@@ -9,7 +9,8 @@ export default function SignIn() {
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
-    const res = await fetch('http://localhost:8000/verify-license', {
+    const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8001';
+    const res = await fetch(`${API}/verify-license`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ invoice_id: invoice, input_key: key }),

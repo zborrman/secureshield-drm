@@ -17,7 +17,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const handleSignOut = async () => {
     const storedInvoice = localStorage.getItem('invoice_id');
     if (storedInvoice) {
-      await fetch(`http://localhost:8000/signout?invoice_id=${storedInvoice}`, {
+      const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8001';
+      await fetch(`${API}/signout?invoice_id=${storedInvoice}`, {
         method: 'POST',
       }).catch(() => {});
     }

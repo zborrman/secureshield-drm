@@ -8,7 +8,7 @@ type WasmModule = typeof import('../../wasm/pkg/wasm_watermark');
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8001';
 
-export default function SecureContent({ encryptedData }: { encryptedData: number[] }) {
+export default function SecureContent({ encryptedData = [] }: { encryptedData?: number[] }) {
     const [wasm, setWasm] = useState<WasmModule | null>(null);
     const [viewer, setViewer] = useState<any>(null);
     const [isReady, setIsReady] = useState(false);
@@ -97,27 +97,31 @@ export default function SecureContent({ encryptedData }: { encryptedData: number
         ctx.putImageData(imageData, 0, 0);
     };
 
-    if (!isReady) return (
-        <div className="animate-pulse text-slate-500">Загрузка защищенного окружения...</div>
-    );
-
     return (
         <div className="space-y-4 bg-slate-900 p-6 rounded-xl border border-slate-800 shadow-2xl">
             <div className="flex items-center gap-2 mb-2">
-                <div className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_10px_#22c55e]"></div>
-                <span className="text-xs font-mono text-green-500 uppercase tracking-widest">
-                    Secure Enclave Active
-                </span>
-                {sessionId && (
-                    <span className="ml-auto text-xs font-mono text-slate-500">
-                        session #{sessionId}
-                    </span>
-                )}
-                {offlineMode && (
-                    <span className="ml-auto flex items-center gap-1 text-[10px] font-mono text-indigo-400 border border-indigo-800/40 px-2 py-0.5 rounded-full">
-                        <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 inline-block"></span>
-                        Offline — {offlineMode.hoursRemaining}h remaining
-                    </span>
+                {isReady ? (
+                    <>
+                        <div className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_10px_#22c55e]"></div>
+                        <span className="text-xs font-mono text-green-500 uppercase tracking-widest">
+                            Secure Enclave Active
+                        </span>
+                        {sessionId && (
+                            <span className="ml-auto text-xs font-mono text-slate-500">
+                                session #{sessionId}
+                            </span>
+                        )}
+                        {offlineMode && (
+                            <span className="ml-auto flex items-center gap-1 text-[10px] font-mono text-indigo-400 border border-indigo-800/40 px-2 py-0.5 rounded-full">
+                                <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 inline-block"></span>
+                                Offline — {offlineMode.hoursRemaining}h remaining
+                            </span>
+                        )}
+                    </>
+                ) : (
+                    <div className="animate-pulse text-slate-500 text-xs font-mono">
+                        Загрузка защищенного окружения...
+                    </div>
                 )}
             </div>
 
@@ -143,24 +147,26 @@ export default function SecureContent({ encryptedData }: { encryptedData: number
                 )}
             </div>
 
-            <div className="flex gap-2">
-                <input
-                    type="password"
-                    id="key-input"
-                    placeholder="Лицензионный ключ"
-                    className="flex-1 bg-slate-950 border border-slate-800 p-2 rounded text-sm focus:border-blue-500 outline-none transition"
-                />
-                <button
-                    onClick={() =>
-                        handleUnlock(
-                            (document.getElementById('key-input') as HTMLInputElement).value
-                        )
-                    }
-                    className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded text-sm font-bold transition-all active:scale-95"
-                >
-                    Unlock
-                </button>
-            </div>
+            {isReady && (
+                <div className="flex gap-2">
+                    <input
+                        type="password"
+                        id="key-input"
+                        placeholder="Лицензионный ключ"
+                        className="flex-1 bg-slate-950 border border-slate-800 p-2 rounded text-sm focus:border-blue-500 outline-none transition"
+                    />
+                    <button
+                        onClick={() =>
+                            handleUnlock(
+                                (document.getElementById('key-input') as HTMLInputElement).value
+                            )
+                        }
+                        className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded text-sm font-bold transition-all active:scale-95"
+                    >
+                        Unlock
+                    </button>
+                </div>
+            )}
         </div>
     );
 }

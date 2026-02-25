@@ -185,14 +185,28 @@ jobs:
       - name: Install backend dependencies
         run: cd backend && pip install -r requirements.txt
 
-      # Start uvicorn in the background; log to file for diagnostics.
-      # REDIS_URL defaults to redis://localhost:6379/0 in redis_service.py.
+      # Verify the app can be imported before attempting to start uvicorn.
+      # This catches import errors (missing deps, API-breaking package updates)
+      # immediately rather than letting them hide behind a 60-second timeout.
+      - name: Smoke-test app import
+        run: cd backend && python -c "from main import app; print('import OK')"
+
+      # nohup prevents SIGHUP from killing the child when the step's shell exits.
+      # python -m uvicorn guarantees the right interpreter / PATH is used.
       - name: Start backend API
         run: |
           cd backend
-          uvicorn main:app --host 0.0.0.0 --port 8001 > /tmp/uvicorn.log 2>&1 &
+          nohup python -m uvicorn main:app --host 0.0.0.0 --port 8001 \
+            --log-level info > /tmp/uvicorn.log 2>&1 &
           echo $! > /tmp/uvicorn.pid
-          echo "uvicorn PID: $(cat /tmp/uvicorn.pid)"
+          # 5-second settle: fail fast if uvicorn dies during startup
+          sleep 5
+          if kill -0 "$(cat /tmp/uvicorn.pid)" 2>/dev/null; then
+            echo "uvicorn is alive (PID $(cat /tmp/uvicorn.pid))"
+            cat /tmp/uvicorn.log
+          else
+            echo "=== uvicorn DIED at startup — log:"; cat /tmp/uvicorn.log; exit 1
+          fi
 
       # Print current health on every poll; dump full uvicorn log on timeout.
       - name: Wait for API to be healthy

@@ -25,7 +25,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     localStorage.removeItem('auth_token');
     localStorage.removeItem('invoice_id');
     document.cookie = 'auth_token=; Max-Age=0; path=/; SameSite=Strict';
-    window.location.href = '/auth/signin';
+    router.push('/auth/signin');
   };
 
   return (

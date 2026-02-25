@@ -199,24 +199,36 @@ jobs:
           nohup python -m uvicorn main:app --host 0.0.0.0 --port 8001 \
             --log-level info > /tmp/uvicorn.log 2>&1 &
           echo $! > /tmp/uvicorn.pid
-          # 5-second settle: fail fast if uvicorn dies during startup
-          sleep 5
-          if kill -0 "$(cat /tmp/uvicorn.pid)" 2>/dev/null; then
-            echo "uvicorn is alive (PID $(cat /tmp/uvicorn.pid))"
-            cat /tmp/uvicorn.log
-          else
-            echo "=== uvicorn DIED at startup — log:"; cat /tmp/uvicorn.log; exit 1
-          fi
+          echo "uvicorn started (PID $(cat /tmp/uvicorn.pid))"
 
-      # Print current health on every poll; dump full uvicorn log on timeout.
+      # Always-run diagnostics: shows port, PID state, and log even on success.
+      # Runs after the 15-second settle so the lifespan startup has time to finish.
+      - name: Diagnose startup (15-second settle)
+        if: always()
+        run: |
+          sleep 15
+          echo "=== Listening on :8001 ==="
+          ss -tlnp | grep 8001 || netstat -tlnp 2>/dev/null | grep 8001 || echo "nothing on 8001"
+          echo "=== uvicorn PID $(cat /tmp/uvicorn.pid 2>/dev/null) alive? ==="
+          kill -0 "$(cat /tmp/uvicorn.pid 2>/dev/null)" 2>/dev/null && echo "ALIVE" || echo "DEAD"
+          echo "=== uvicorn log ==="
+          cat /tmp/uvicorn.log || echo "(no log file)"
+          echo "=== /health response ==="
+          curl -sv http://localhost:8001/health 2>&1 || echo "(no response)"
+
+      # Explicit loop so every poll prints the full response body; max 30 × 3 s = 90 s.
       - name: Wait for API to be healthy
         run: |
-          timeout 60 bash -c \
-            'until curl -sf http://localhost:8001/health | grep -q healthy; do
-               echo "response: $(curl -s http://localhost:8001/health 2>&1 || echo no-response)"
-               sleep 3
-             done' \
-          || { echo "=== TIMEOUT — uvicorn log:"; cat /tmp/uvicorn.log; exit 1; }
+          for i in $(seq 1 30); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8001/health 2>&1)
+            BODY=$(curl -s http://localhost:8001/health 2>&1)
+            echo "attempt $i: HTTP $STATUS — $BODY"
+            if echo "$BODY" | grep -q '"status": "healthy"'; then
+              echo "API is healthy!"; exit 0
+            fi
+            sleep 3
+          done
+          echo "=== TIMEOUT — final uvicorn log:"; cat /tmp/uvicorn.log; exit 1
 
       - name: Set up Node.js 20
         uses: actions/setup-node@v4

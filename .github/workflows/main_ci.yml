@@ -193,6 +193,48 @@ jobs:
       - name: Smoke-test app import
         run: cd backend && python -c "from main import app; print('import OK')"
 
+      # Directly test that DB and Redis are reachable from Python before we start
+      # uvicorn. If either connection fails here, we know the problem is network/
+      # service config, not the application. Runs in the same env as uvicorn will.
+      - name: Pre-flight connectivity test
+        run: |
+          python - <<'PYEOF'
+          import asyncio, os, sys
+
+          async def main():
+              errors = []
+
+              # ── PostgreSQL via asyncpg ────────────────────────────────────────
+              try:
+                  import asyncpg
+                  conn = await asyncpg.connect(os.environ["DATABASE_URL"].replace(
+                      "postgresql+asyncpg://", "postgresql://"))
+                  result = await conn.fetchval("SELECT 1")
+                  await conn.close()
+                  print(f"[OK] PostgreSQL: SELECT 1 = {result}")
+              except Exception as e:
+                  errors.append(f"[FAIL] PostgreSQL: {e}")
+                  print(errors[-1])
+
+              # ── Redis via redis.asyncio ───────────────────────────────────────
+              try:
+                  import redis.asyncio as aioredis
+                  r = aioredis.Redis.from_url(
+                      os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0"),
+                      decode_responses=True)
+                  pong = await r.ping()
+                  await r.aclose()
+                  print(f"[OK] Redis: PING = {pong}")
+              except Exception as e:
+                  errors.append(f"[FAIL] Redis: {e}")
+                  print(errors[-1])
+
+              if errors:
+                  sys.exit(1)
+
+          asyncio.run(main())
+          PYEOF
+
       # nohup prevents SIGHUP from killing the child when the step's shell exits.
       # python -m uvicorn guarantees the right interpreter / PATH is used.
       - name: Start backend API

@@ -47,16 +47,17 @@ test.describe('DOM Inspection — No raw content leakage', () => {
     await page.goto('/dashboard');
     await page.waitForSelector('canvas', { timeout: 10_000 });
 
-    // Trigger contextmenu event and verify it was prevented
+    // Trigger contextmenu event and verify it was prevented.
+    // We must check event.defaultPrevented AFTER dispatchEvent() returns —
+    // React attaches its handler via event delegation at the root, so it runs
+    // during the bubble phase, after any listener added directly on the canvas.
+    // dispatchEvent() is synchronous and returns only after all handlers complete.
     const prevented = await page.evaluate(() => {
       const canvas = document.querySelector('canvas');
       if (!canvas) return false;
-      let defaultPrevented = false;
-      canvas.addEventListener('contextmenu', (e) => {
-        defaultPrevented = e.defaultPrevented;
-      }, { once: true });
-      canvas.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
-      return defaultPrevented;
+      const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+      canvas.dispatchEvent(event);
+      return event.defaultPrevented;
     });
     expect(prevented).toBe(true);
   });

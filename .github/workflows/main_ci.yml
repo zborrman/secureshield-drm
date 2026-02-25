@@ -124,16 +124,60 @@ jobs:
     needs: [ wasm-tests, backend-tests ]
     runs-on: ubuntu-latest
 
+    # Managed services — GitHub Actions starts these containers and waits for
+    # them to pass their health checks before running any steps.
+    # Using services (instead of docker compose) avoids the 3–5 min image-build
+    # penalty on cold runners and matches the approach in backend-tests.
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: user
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: main_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U user -d main_db"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
 
-      # Start only DB + API (not the UI container — playwright launches its own dev server).
-      # Env vars must be exported so docker compose can substitute them into the
-      # backend service's `environment:` block (docker-compose.yml reads ${VAR}).
-      # validate_secrets() in config.py aborts startup if any required secret is
-      # missing or too short — that was the previous cause of the API timeout.
-      - name: Start backend services (DB + API)
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('backend/requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install backend dependencies
+        run: cd backend && pip install -r requirements.txt
+
+      # Start uvicorn in the background.  No image build — starts in ~3 s.
+      # REDIS_URL defaults to redis://localhost:6379/0 in redis_service.py so
+      # it does not need to be set explicitly here.
+      - name: Start backend API
         env:
+          DATABASE_URL: postgresql+asyncpg://user:password@localhost:5432/main_db
+          RATE_LIMIT_ENABLED: "false"
           ADMIN_API_KEY: test-admin-key-for-ci-not-production
           OFFLINE_TOKEN_SECRET: test-offline-secret-for-jwt-hs256!
           VAULT_TOKEN_SECRET: test-vault-token-secret-for-jwt32!
@@ -143,15 +187,16 @@ jobs:
           AWS_SECRET_ACCESS_KEY: test
           AWS_DEFAULT_REGION: us-east-1
           S3_BUCKET: test-secureshield-vault
-        run: docker compose up -d db backend
+        run: |
+          cd backend
+          uvicorn main:app --host 0.0.0.0 --port 8001 &
+          echo $! > /tmp/uvicorn.pid
 
-      # The image build (apt-get + pip install) can take 90–120 s on a cold runner;
-      # use 180 s to leave ample headroom.
       - name: Wait for API to be healthy
         run: |
-          timeout 180 bash -c \
+          timeout 60 bash -c \
             'until curl -sf http://localhost:8001/health | grep -q healthy; do
-               echo "waiting for API..."; sleep 5
+               echo "waiting for API..."; sleep 2
              done'
 
       - name: Set up Node.js 20

@@ -81,8 +81,9 @@ test.describe('Wasm Memory — Session cleanup', () => {
       route.fulfill({ status: 200, body: '{"status":"signed_out"}' })
     );
 
-    // Click Sign Out
-    await page.getByRole('button', { name: /sign out/i }).click();
+    // evaluate(el.click()) invokes the native DOM click in the browser JS
+    // context, bypassing the Next.js dev-mode overlay (<nextjs-portal>).
+    await page.getByRole('button', { name: /sign out/i }).evaluate(el => (el as HTMLElement).click());
     await page.waitForURL(/\/auth\/signin/);
 
     // Navigate back and verify storage is empty
@@ -100,7 +101,7 @@ test.describe('Wasm Memory — Session cleanup', () => {
       route.fulfill({ status: 200, body: '{"status":"signed_out"}' })
     );
 
-    await page.getByRole('button', { name: /sign out/i }).click();
+    await page.getByRole('button', { name: /sign out/i }).evaluate(el => (el as HTMLElement).click());
     await page.waitForURL(/\/auth\/signin/);
 
     const cookies = await page.context().cookies();

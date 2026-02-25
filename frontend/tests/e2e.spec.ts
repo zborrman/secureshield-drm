@@ -109,9 +109,10 @@ test.describe('Dashboard — Authenticated Session', () => {
     // Mock the backend signout call
     await page.route('**/signout**', (route) => route.fulfill({ status: 200, body: '{"status":"signed_out"}' }));
 
-    // force:true bypasses Next.js dev-mode overlay (<nextjs-portal>) which
-    // intercepts pointer events in Firefox without blocking the real button.
-    await page.getByRole('button', { name: /sign out/i }).click({ force: true });
+    // evaluate(el.click()) invokes the native DOM click directly in the browser
+    // JS context, bypassing coordinate-based hit-testing. This prevents the
+    // Next.js dev-mode overlay (<nextjs-portal>) from intercepting the event.
+    await page.getByRole('button', { name: /sign out/i }).evaluate(el => (el as HTMLElement).click());
     await expect(page).toHaveURL(/\/auth\/signin/);
   });
 });

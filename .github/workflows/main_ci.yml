@@ -296,7 +296,9 @@ jobs:
             echo "attempt $i: HTTP $STATUS — $BODY"
             echo "- attempt $i: HTTP $STATUS / body: $BODY" \
               >> "$GITHUB_STEP_SUMMARY" || true
-            if echo "$BODY" | grep -q '"status": "healthy"'; then
+            # Starlette's JSONResponse uses compact separators (no space after :)
+            # so the response is  {"status":"healthy",...}  not  {"status": "healthy",...}
+            if echo "$BODY" | grep -q '"status":"healthy"'; then
               echo "API is healthy!"; exit 0
             fi
             sleep 3

@@ -279,17 +279,27 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # Explicit loop so every poll prints the full response body; max 30 × 3 s = 90 s.
+      # Every attempt is also written to $GITHUB_STEP_SUMMARY so it is visible
+      # directly on the run page without needing artifact download or raw-log auth.
       - name: Wait for API to be healthy
         run: |
+          echo "## /health poll log" >> "$GITHUB_STEP_SUMMARY"
           for i in $(seq 1 30); do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8001/health 2>&1)
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8001/health)
             BODY=$(curl -s http://localhost:8001/health 2>&1)
             echo "attempt $i: HTTP $STATUS — $BODY"
+            printf '- attempt %d: HTTP `%s` — `%s`\n' "$i" "$STATUS" "$BODY" \
+              >> "$GITHUB_STEP_SUMMARY"
             if echo "$BODY" | grep -q '"status": "healthy"'; then
               echo "API is healthy!"; exit 0
             fi
             sleep 3
           done
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**TIMEOUT** — final uvicorn log:" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/uvicorn.log >> "$GITHUB_STEP_SUMMARY" 2>/dev/null
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "=== TIMEOUT — final uvicorn log:"; cat /tmp/uvicorn.log; exit 1
 
       - name: Set up Node.js 20

@@ -109,7 +109,9 @@ test.describe('Dashboard — Authenticated Session', () => {
     // Mock the backend signout call
     await page.route('**/signout**', (route) => route.fulfill({ status: 200, body: '{"status":"signed_out"}' }));
 
-    await page.getByRole('button', { name: /sign out/i }).click();
+    // force:true bypasses Next.js dev-mode overlay (<nextjs-portal>) which
+    // intercepts pointer events in Firefox without blocking the real button.
+    await page.getByRole('button', { name: /sign out/i }).click({ force: true });
     await expect(page).toHaveURL(/\/auth\/signin/);
   });
 });
@@ -143,6 +145,8 @@ test.describe('StatusIndicator', () => {
 
     await page.goto('/dashboard');
 
-    await expect(page.getByText(/offline/i)).toBeVisible({ timeout: 5_000 });
+    // Both "API: offline" and "PostgreSQL: offline" match — use first() to
+    // satisfy Playwright's strict-mode requirement of a single element.
+    await expect(page.getByText(/offline/i).first()).toBeVisible({ timeout: 5_000 });
   });
 });

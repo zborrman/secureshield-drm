@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# ── Docker Pre-commit Hooks ────────────────────────────────────────────────────
+# Runs automatically before every commit that touches a Dockerfile.
+#
+# Four checks:
+#   [1/4] Check-Stage          — no compiler in the final image stage
+#   [2/4] Check-User           — non-root USER directive must be present
+#   [3/4] Check-Context        — build context directory must be ≤ 100 MB
+#   [4/4] Scan-Vulnerabilities — CRITICAL CVE scan of the base image
+#
+# Install once (per clone):
+#   bash scripts/install-hooks.sh
+#   — or —
+#   git config core.hooksPath .githooks
+# ─────────────────────────────────────────────────────────────────────────────
+set -euo pipefail
+
+RED='\033[0;31m'; YLW='\033[1;33m'; GRN='\033[0;32m'; BLD='\033[1m'; NC='\033[0m'
+PASS=0; FAIL=0
+
+ok()   { echo -e "  ${GRN}✔${NC} $*"; PASS=$((PASS+1)); }
+err()  { echo -e "  ${RED}✖${NC} $*"; FAIL=$((FAIL+1)); }
+warn() { echo -e "  ${YLW}⚠${NC} $*"; }
+
+# Only run when a Dockerfile is staged ────────────────────────────────────────
+STAGED_DFS=$(git diff --cached --name-only | grep -E '(^|/)Dockerfile$' || true)
+[ -z "$STAGED_DFS" ] && exit 0
+
+echo -e "\n${BLD}── Docker Pre-commit Hooks ─────────────────────────────────────────────────${NC}"
+
+for DF in $STAGED_DFS; do
+    echo -e "\n${BLD}▶ $DF${NC}"
+
+    # ── [1/4] Check-Stage: no compiler in final image ─────────────────────────
+    echo -e "${BLD}  [1/4] Check-Stage — no compiler in final stage${NC}"
+
+    LAST_FROM=$(grep -n "^FROM" "$DF" | tail -1 | cut -d: -f1)
+    FINAL=$(tail -n "+${LAST_FROM}" "$DF")
+    HIT=0
+
+    for pkg in gcc g++ build-essential javac golang-go rustc clang; do
+        SAFE=$(echo "$pkg" | sed 's/+/\\+/g')
+        # Check only lines that contain an install command; skip comments
+        if echo "$FINAL" \
+               | grep -viE '^\s*#' \
+               | grep -iE "(apt-get\s+install|apt\s+install|apk\s+add)" \
+               | grep -qiE "\b${SAFE}\b"; then
+            err "Compiler '${pkg}' found in final stage — move to builder stage (${DF})"
+            HIT=1
+        fi
+    done
+    [ "$HIT" -eq 0 ] && ok "No compiler packages in final stage"
+
+    # ── [2/4] Check-User: non-root USER required ──────────────────────────────
+    echo -e "${BLD}  [2/4] Check-User — non-root USER directive${NC}"
+
+    USER_LINES=$(grep -E "^USER\s" "$DF" || true)
+    if [ -z "$USER_LINES" ]; then
+        err "No USER directive — container runs as root. Add 'USER appuser' before CMD."
+    elif echo "$USER_LINES" | grep -qE "^USER\s+(root|0)\s*$"; then
+        err "USER is explicitly 'root' — use a non-privileged user."
+    else
+        ok "$(echo "$USER_LINES" | tail -1 | xargs)"
+    fi
+
+    # ── [3/4] Check-Context: build context ≤ 100 MB ───────────────────────────
+    echo -e "${BLD}  [3/4] Check-Context — build context ≤ 100 MB${NC}"
+
+    CTX=$(dirname "$DF")
+    # frontend/Dockerfile uses the repo root as its docker-compose build context
+    if [ "$CTX" = "frontend" ] && grep -q "context: \." docker-compose.yml 2>/dev/null; then
+        CTX="."
+    fi
+    CTX_LABEL="${CTX}/"
+    [ "$CTX" = "." ] && CTX_LABEL="repo root"
+
+    IGNORE="${CTX}/.dockerignore"
+    if [ ! -f "$IGNORE" ]; then
+        warn ".dockerignore not found at '${IGNORE}' — build context may be large"
+    fi
+
+    SIZE_MB=$(( $(du -sk "$CTX" 2>/dev/null | cut -f1) / 1024 ))
+    if [ "$SIZE_MB" -gt 100 ]; then
+        err "Context (${CTX_LABEL}) is ${SIZE_MB} MB > 100 MB — review .dockerignore"
+        warn "Largest items in ${CTX_LABEL}:"
+        du -sk "${CTX}"/* 2>/dev/null | sort -rn | head -5 \
+            | awk '{printf "      %4d MB  %s\n", $1/1024, $2}' || true
+    else
+        ok "Context (${CTX_LABEL}) is ${SIZE_MB} MB"
+    fi
+
+    # ── [4/4] Scan-Vulnerabilities: CRITICAL CVE scan ─────────────────────────
+    echo -e "${BLD}  [4/4] Scan-Vulnerabilities — CRITICAL CVE check${NC}"
+
+    BASE=$(grep -E "^FROM" "$DF" | tail -1 | awk '{print $2}')
+
+    if command -v trivy &>/dev/null; then
+        echo "    trivy → ${BASE}"
+        if trivy image --quiet --severity CRITICAL --exit-code 1 \
+                --no-progress "$BASE" 2>/dev/null; then
+            ok "No CRITICAL CVEs in ${BASE}  (trivy)"
+        else
+            err "CRITICAL CVEs found in ${BASE} — run: trivy image ${BASE}"
+        fi
+
+    elif command -v docker &>/dev/null && docker scout version &>/dev/null 2>&1; then
+        echo "    docker scout → ${BASE}"
+        if docker scout cves --exit-code --only-severity critical "$BASE" 2>/dev/null; then
+            ok "No CRITICAL CVEs in ${BASE}  (docker scout)"
+        else
+            err "CRITICAL CVEs found in ${BASE} — run: docker scout cves ${BASE}"
+        fi
+
+    else
+        warn "No CVE scanner found — skipping scan of ${BASE}"
+        warn "Install trivy:  https://trivy.dev/latest/getting-started/installation/"
+        warn "            or: Docker Desktop Pro (docker scout)"
+    fi
+
+done
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+echo -e "\n${BLD}── Result ──────────────────────────────────────────────────────────────────${NC}"
+printf "  ${GRN}Passed: %d${NC}   ${RED}Failed: %d${NC}\n" "$PASS" "$FAIL"
+
+if [ "$FAIL" -gt 0 ]; then
+    echo -e "\n${RED}${BLD}  ✖ Commit blocked — fix the issues above, re-stage your files, and retry.${NC}\n"
+    exit 1
+fi
+
+echo -e "\n${GRN}${BLD}  ✔ All Docker pre-commit checks passed.${NC}\n"
+exit 0

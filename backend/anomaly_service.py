@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import uuid as _uuid
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -59,7 +59,7 @@ def detect_ip_velocity(
 
     Indicates: credential sharing, VPN abuse, or a distributed attack.
     """
-    cutoff = datetime.utcnow() - timedelta(hours=window_hours)
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=window_hours)
     by_license: dict[int, list] = defaultdict(list)
     for s in sessions:
         if s.start_time >= cutoff:
@@ -102,7 +102,7 @@ def detect_session_flood(
     Sudden bursts suggest automated scraping or credential stuffing.
     Score scales from 50 → 100 based on burst size beyond the threshold.
     """
-    cutoff = datetime.utcnow() - timedelta(minutes=window_minutes)
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=window_minutes)
     by_license: dict[int, list] = defaultdict(list)
     for s in sessions:
         if s.start_time >= cutoff:
@@ -188,7 +188,7 @@ def detect_brute_force(
     multiple invoice IDs from the same source.
     Score scales from 50 → 100 based on fail count beyond the threshold.
     """
-    cutoff = datetime.utcnow() - timedelta(minutes=window_minutes)
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=window_minutes)
     fails_by_ip: dict[str, list] = defaultdict(list)
     for log in audit_logs:
         if not log.is_success and log.timestamp >= cutoff and log.ip_address:
@@ -320,7 +320,7 @@ def detect_multi_country(
     Requires a pre-built ip→country_code mapping (use geo_service on caller side).
     Score scales from 40 → 100 based on country count beyond the threshold.
     """
-    cutoff = datetime.utcnow() - timedelta(hours=window_hours)
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=window_hours)
     by_license: dict[int, list] = defaultdict(list)
     for s in sessions:
         if s.start_time >= cutoff:
@@ -404,7 +404,7 @@ def analyze_all(
     if country_map:
         findings += detect_multi_country(sessions, country_map)
 
-    now_str = datetime.utcnow().isoformat() + "Z"
+    now_str = datetime.now(timezone.utc).isoformat()
     for f in findings:
         f["anomaly_id"] = str(_uuid.uuid4())
         f["detected_at"] = now_str
@@ -443,7 +443,7 @@ async def run_anomaly_analysis(
     import models
     import geo_service
 
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours)
 
     session_q = select(models.ViewAnalytics).where(
         models.ViewAnalytics.start_time >= cutoff

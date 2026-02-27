@@ -25,6 +25,9 @@ SUPER_ADMIN_KEY      = os.getenv("SUPER_ADMIN_KEY", "")
 ADMIN_TOTP_SECRET = os.getenv("ADMIN_TOTP_SECRET", "")
 # TTL (seconds) for the short-lived admin session JWTs issued by /admin/login.
 ADMIN_SESSION_TTL = int(os.getenv("ADMIN_SESSION_TTL", "900"))   # default 15 min
+# Dedicated HS256 signing secret for admin session JWTs (≥ 32 bytes recommended).
+# If unset, _admin_session_secret() in dependencies.py derives one via SHA-256.
+ADMIN_SESSION_SECRET = os.getenv("ADMIN_SESSION_SECRET", "")
 
 
 def validate_secrets() -> None:

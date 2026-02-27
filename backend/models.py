@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, UniqueConstraint, Index
 from datetime import datetime
 from database import Base
 
@@ -19,6 +19,9 @@ class Tenant(Base):
 
 class License(Base):
     __tablename__ = "licenses"
+    __table_args__ = (
+        Index("idx_licenses_is_paid", "is_paid"),
+    )
 
     id               = Column(Integer, primary_key=True, index=True)
     invoice_id       = Column(String, unique=True, index=True)
@@ -34,6 +37,10 @@ class License(Base):
 
 class AuditLog(Base):
     __tablename__ = "audit_logs"
+    __table_args__ = (
+        Index("idx_audit_invoice_ts", "invoice_id", "timestamp"),
+        Index("idx_audit_timestamp", "timestamp"),
+    )
 
     id         = Column(Integer, primary_key=True, index=True)
     timestamp  = Column(DateTime, default=datetime.utcnow)
@@ -46,6 +53,10 @@ class AuditLog(Base):
 
 class ViewAnalytics(Base):
     __tablename__ = "view_analytics"
+    __table_args__ = (
+        Index("idx_analytics_start_time", "start_time"),
+        Index("idx_analytics_license_tenant", "license_id", "tenant_id"),
+    )
 
     id               = Column(Integer, primary_key=True, index=True)
     license_id       = Column(Integer, ForeignKey("licenses.id"), index=True)

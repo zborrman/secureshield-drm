@@ -74,13 +74,21 @@ SecureShield uses a **3-tier auth model**. Every request must include the correc
 | `POST` | `/analytics/start` | Start a viewing session |
 | `POST` | `/analytics/heartbeat/{session_id}` | Session heartbeat |
 
-### Admin (`X-Admin-Key` required)
+### Admin authentication
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/admin/login` | Exchange API key for short-lived session JWT (TOTP-aware) |
+| `GET` | `/admin/totp/setup` | TOTP 2FA provisioning URI + status |
+
+### Admin (`X-Admin-Key` or `Authorization: Bearer <session-jwt>` required)
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Health check (DB + Redis + S3) |
 | `POST` | `/admin/create-license` | Create a license |
 | `GET` | `/admin/licenses` | List all licenses |
+| `POST` | `/admin/licenses/bulk` | Bulk import licenses from CSV |
 | `PATCH` | `/admin/licenses/{invoice_id}/geo` | Update geofence |
 | `GET` | `/admin/audit-log` | Full audit trail |
 | `GET` | `/admin/alerts` | Recent failed attempts |
@@ -154,6 +162,9 @@ See [`.env.example`](.env.example) for the full annotated reference. Minimum req
 | `AWS_SECRET_ACCESS_KEY` | Vault | S3 credentials |
 | `S3_BUCKET` | Vault | S3 bucket name (default: `secureshield-vault`) |
 | `CORS_ORIGINS` | Prod | Comma-separated allowed origins |
+| `ADMIN_SESSION_SECRET` | Optional | HS256 signing key for admin session JWTs (≥32 bytes; auto-derived if unset) |
+| `ADMIN_SESSION_TTL` | Optional | Admin session JWT lifetime in seconds (default: 900) |
+| `ADMIN_TOTP_SECRET` | Optional | Base-32 TOTP secret; enables 2FA on `/admin/login` when set |
 
 ---
 
@@ -183,7 +194,7 @@ SecureShield DRM System/
 │   │   ├── tenant.py           # Tenant-scoped routes
 │   │   └── superadmin.py       # Super-admin routes
 │   ├── migrations/             # Alembic async migrations
-│   ├── tests/                  # pytest test suite (78 tests)
+│   ├── tests/                  # pytest test suite (162 tests)
 │   ├── requirements.txt
 │   └── Dockerfile
 ├── frontend/

@@ -12,6 +12,8 @@ os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
 
 # Must be set BEFORE main.py is imported — ADMIN_API_KEY is read at module level
 os.environ.setdefault("ADMIN_API_KEY", "test-admin-key")
+# Dedicated admin session JWT secret — avoids InsecureKeyLengthWarning (28-byte derived key)
+os.environ.setdefault("ADMIN_SESSION_SECRET", "test-admin-session-secret-32bytes!")
 # PyJWT ≥ 2.9 requires HMAC keys ≥ 32 bytes for HS256 — set an explicit secret
 # so the default derivation (ADMIN_API_KEY + "-offline-v1" = 25 bytes) is not used.
 os.environ.setdefault("OFFLINE_TOKEN_SECRET", "test-offline-secret-for-jwt-hs256!")

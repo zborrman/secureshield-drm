@@ -109,6 +109,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "connect-src 'self'; "
             "frame-ancestors 'none';"
         )
+        response.headers["X-API-Version"] = "1.0.0"
         return response
 
 
@@ -154,12 +155,18 @@ app.include_router(tenant.router)
 # rule (e.g. nginx allow 10.0.0.0/8; deny all;) so scrapers can reach it but
 # the public internet cannot.
 
+import platform as _platform
 from prometheus_fastapi_instrumentator import Instrumentator  # noqa: E402
+from prometheus_client import Info as _Prom_Info  # noqa: E402
 
 Instrumentator(
     should_group_status_codes=False,
     should_instrument_requests_inprogress=False,
 ).instrument(app).expose(app, include_in_schema=False)
+
+# Build-info gauge — exposes version and Python runtime for Grafana annotations
+_build_info = _Prom_Info("drm_build", "SecureShield DRM build metadata")
+_build_info.info({"version": "1.0.0", "python": _platform.python_version()})
 
 # ── OpenTelemetry tracing (opt-in via OTEL_ENABLED=true) ──────────────────────
 # When OTEL_ENABLED is unset or "false" the OTel packages are never imported —

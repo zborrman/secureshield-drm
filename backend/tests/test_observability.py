@@ -116,3 +116,27 @@ def test_prometheus_alert_rules_yaml_valid():
     assert not missing, (
         f"alerts.yml is missing expected alert rules: {missing}. Found: {all_names}"
     )
+
+
+# ── Build-info metric (Cat G) ─────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_build_info_metric_in_prometheus(client, db_session):
+    """GET /metrics must expose the drm_build_info gauge."""
+    res = await client.get("/metrics")
+    assert res.status_code == 200
+    assert "drm_build_info" in res.text, (
+        "drm_build_info not found in /metrics. "
+        "Check that _build_info = Info('drm_build', ...) is registered in main.py"
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_info_contains_version(client, db_session):
+    """drm_build_info metric must include version=\"1.0.0\" label."""
+    res = await client.get("/metrics")
+    assert res.status_code == 200
+    assert 'version="1.0.0"' in res.text, (
+        "Expected version=\"1.0.0\" label in drm_build_info metric. "
+        f"Snippet: {[l for l in res.text.splitlines() if 'drm_build' in l]}"
+    )

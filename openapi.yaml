@@ -28,6 +28,8 @@ tags:
     description: Zero-knowledge offline token verification (public)
   - name: payment
     description: Stripe checkout integration (public)
+  - name: admin-auth
+    description: Admin authentication — short-lived JWT sessions + TOTP 2FA
   - name: admin-licenses
     description: License management — requires X-Admin-Key
   - name: admin-analytics
@@ -145,7 +147,7 @@ components:
                 method:     { type: string, enum: [direct_invoice_id, fingerprint_match] }
                 invoice_id: { $ref: "#/components/schemas/InvoiceId" }
                 owner_id:   { type: string }
-                fingerprint:{ type: string }
+                fingerprint : { type: string }
             license:
               type: object
               properties:
@@ -153,7 +155,7 @@ components:
                 owner_id:         { type: string }
                 is_paid:          { type: boolean }
                 max_sessions:     { type: integer }
-                allowed_countries:{ type: string, nullable: true }
+                allowed_countries : { type: string, nullable: true }
             viewing_sessions:
               type: array
               items:
@@ -198,7 +200,7 @@ components:
         invoice_id:       { $ref: "#/components/schemas/InvoiceId" }
         issued_at:        { $ref: "#/components/schemas/IsoTimestamp" }
         valid_until:      { $ref: "#/components/schemas/IsoTimestamp" }
-        max_offline_hours:{ type: integer, example: 24 }
+        max_offline_hours : { type: integer, example: 24 }
         device_hint:      { type: string, nullable: true, example: "Alice Laptop" }
         is_revoked:       { type: boolean }
         is_expired:       { type: boolean }
@@ -471,7 +473,7 @@ paths:
                     properties:
                       valid:          { type: boolean, example: true }
                       invoice_id:     { $ref: "#/components/schemas/InvoiceId" }
-                      hours_remaining:{ type: integer, example: 22 }
+                      hours_remaining : { type: integer, example: 22 }
                       device_hint:    { type: string, nullable: true }
                   - type: object
                     description: Token is invalid
@@ -593,7 +595,7 @@ paths:
                 type: object
                 properties:
                   invoice_id:       { $ref: "#/components/schemas/InvoiceId" }
-                  plain_key_to_copy:{ type: string, example: "SK-Xk3mNpQr7sTuVwYz" }
+                  plain_key_to_copy : { type: string, example: "SK-Xk3mNpQr7sTuVwYz" }
                   warning:          { type: string }
         "401":
           description: Missing or invalid admin key
@@ -648,7 +650,7 @@ paths:
                 type: object
                 properties:
                   invoice_id:       { $ref: "#/components/schemas/InvoiceId" }
-                  allowed_countries:{ type: string, nullable: true }
+                  allowed_countries : { type: string, nullable: true }
         "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "404": { description: License not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
@@ -843,7 +845,7 @@ paths:
                   token_id:         { type: string, format: uuid }
                   invoice_id:       { $ref: "#/components/schemas/InvoiceId" }
                   valid_until:      { $ref: "#/components/schemas/IsoTimestamp" }
-                  max_offline_hours:{ type: integer }
+                  max_offline_hours : { type: integer }
                   device_hint:      { type: string, nullable: true }
                   token:            { type: string, description: "HS256 JWT — deliver to licensee" }
         "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
@@ -1388,7 +1390,7 @@ paths:
                 type: object
                 properties:
                   invoice_id:       { $ref: "#/components/schemas/InvoiceId" }
-                  plain_key_to_copy:{ type: string }
+                  plain_key_to_copy : { type: string }
                   warning:          { type: string }
         "401": { description: Unauthorized }
         "403": { description: Plan license limit reached }
@@ -1702,4 +1704,93 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AnomalyResponse" }
+
+  /admin/login:
+    post:
+      tags: [admin-auth]
+      summary: Exchange API key for a short-lived session JWT
+      operationId: adminLogin
+      description: |
+        Accepts `api_key` as a query parameter (or `Authorization: Bearer` on
+        subsequent requests). On success returns an HS256 JWT signed with
+        `ADMIN_SESSION_SECRET`. TTL is controlled by `ADMIN_SESSION_TTL`
+        (default 900 s / 15 min). If TOTP is configured, the returned token
+        includes `totp_required: true` and a TOTP code must be sent to
+        `POST /admin/totp/verify` to obtain a fully-authenticated token.
+      parameters:
+        - name: api_key
+          in: query
+          required: true
+          schema: { type: string }
+          description: Raw admin API key
+      responses:
+        "200":
+          description: Short-lived admin session JWT
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:        { type: string, description: "HS256 JWT" }
+                  totp_required: { type: boolean, description: "true when TOTP is enabled" }
+        "401": { description: Invalid API key, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /admin/totp/setup:
+    get:
+      tags: [admin-auth]
+      summary: Get TOTP configuration status (and provisioning URI when disabled)
+      operationId: adminTotpSetup
+      security:
+        - AdminKey: []
+      description: |
+        Returns whether TOTP 2FA is currently enabled.  When disabled, also
+        returns an `otpauth://` provisioning URI that can be scanned with any
+        authenticator app.  Requires admin credentials.
+      responses:
+        "200":
+          description: TOTP status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  totp_enabled: { type: boolean }
+                  otpauth_uri:  { type: string, nullable: true, description: "Only present when TOTP is disabled" }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /admin/licenses/bulk:
+    post:
+      tags: [admin-licenses]
+      summary: Bulk import licenses from CSV
+      operationId: adminBulkImportLicenses
+      security:
+        - AdminKey: []
+      description: |
+        Accepts a multipart CSV upload. Each row must have `invoice_id` and
+        `owner_id` columns. Returns a summary of created vs skipped rows.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: CSV file with invoice_id,owner_id headers
+      responses:
+        "200":
+          description: Bulk import result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  created: { type: integer }
+                  skipped: { type: integer }
+                  errors:  { type: array, items: { type: string } }
+        "400": { description: Invalid CSV, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }

@@ -14,6 +14,7 @@ from dependencies import get_db, require_super_admin
 from auth_utils import hash_license_key
 from rate_limit import limiter, SUPERADMIN_LIMIT
 import models
+import redis_service
 
 router = APIRouter()
 
@@ -149,6 +150,7 @@ async def update_tenant(
         tenant.is_active = is_active
     await _superadmin_audit(db, request, "update_tenant", slug, {"changes": changes})
     await db.commit()
+    await redis_service.cache_delete(f"tenant:{slug}")
     return {"slug": slug, "updated": True}
 
 
@@ -241,5 +243,6 @@ async def delete_tenant(
     await _superadmin_audit(db, request, "delete_tenant", slug,
                             {"licenses_deleted": len(license_ids)})
     await db.commit()
+    await redis_service.cache_delete(f"tenant:{slug}")
 
     return {"status": "deleted", "slug": slug}

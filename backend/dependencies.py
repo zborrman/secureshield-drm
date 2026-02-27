@@ -10,7 +10,10 @@ from sqlalchemy.future import select
 from database import SessionLocal
 from auth_utils import verify_license_key
 import models
-from config import ADMIN_API_KEY, SUPER_ADMIN_KEY
+import redis_service as _redis_service
+from config import ADMIN_API_KEY, ADMIN_SESSION_SECRET, SUPER_ADMIN_KEY
+
+_TENANT_CACHE_TTL = 300  # seconds — 5-minute tenant config cache
 
 
 # ── Database ───────────────────────────────────────────────────────────────────
@@ -23,8 +26,16 @@ async def get_db():
 # ── Auth dependencies ──────────────────────────────────────────────────────────
 
 def _admin_session_secret() -> str:
-    """Derive the signing secret for admin session JWTs from the master API key."""
-    return ADMIN_API_KEY + "-admin-session"
+    """Return the HS256 signing secret for admin session JWTs.
+
+    If ADMIN_SESSION_SECRET is explicitly set (recommended for production), it is
+    used directly.  Otherwise we derive a 64-byte hex digest from ADMIN_API_KEY
+    so the secret is always ≥ 32 bytes — eliminating PyJWT's InsecureKeyLengthWarning.
+    """
+    if ADMIN_SESSION_SECRET:
+        return ADMIN_SESSION_SECRET
+    import hashlib
+    return hashlib.sha256((ADMIN_API_KEY + "-admin-session").encode()).hexdigest()
 
 
 async def require_admin(
@@ -74,9 +85,36 @@ async def get_current_tenant(
     x_admin_key: str = Header(default=""),
     db: AsyncSession = Depends(get_db),
 ) -> models.Tenant:
-    """FastAPI dependency: resolves and validates the current tenant from headers."""
+    """FastAPI dependency: resolves and validates the current tenant from headers.
+
+    Tenant config (id, slug, plan, admin_key_hash) is cached in Redis for
+    _TENANT_CACHE_TTL seconds to reduce DB round-trips on tenant-scoped endpoints.
+    The bcrypt key-verify step always runs (cache only skips the DB SELECT).
+    Cache is invalidated by superadmin PATCH/DELETE operations.
+    """
     if not x_tenant_id:
         raise HTTPException(status_code=401, detail="Missing X-Tenant-ID header")
+
+    # ── Try Redis cache first ────────────────────────────────────────────────
+    _cache_key = f"tenant:{x_tenant_id}"
+    cached = await _redis_service.cache_get(_cache_key)
+    if cached:
+        # Re-use cached admin_key_hash to avoid DB round-trip
+        if not cached.get("is_active", True):
+            raise HTTPException(status_code=403, detail="Tenant account is deactivated")
+        if not verify_license_key(x_admin_key, cached["admin_key_hash"]):
+            raise HTTPException(status_code=401, detail="Invalid tenant admin key")
+        # Reconstruct a lightweight namespace object the routers can read
+        tenant = models.Tenant()
+        tenant.id = int(cached["id"])
+        tenant.slug = cached["slug"]
+        tenant.admin_key_hash = cached["admin_key_hash"]
+        tenant.plan = cached.get("plan", "starter")
+        tenant.max_licenses = cached.get("max_licenses", 100)
+        tenant.is_active = cached.get("is_active", True)
+        return tenant
+
+    # ── Cache miss — query DB ────────────────────────────────────────────────
     result = await db.execute(
         select(models.Tenant).where(models.Tenant.slug == x_tenant_id)
     )
@@ -87,6 +125,17 @@ async def get_current_tenant(
         raise HTTPException(status_code=403, detail="Tenant account is deactivated")
     if not verify_license_key(x_admin_key, tenant.admin_key_hash):
         raise HTTPException(status_code=401, detail="Invalid tenant admin key")
+
+    # Populate cache for subsequent requests
+    await _redis_service.cache_set(_cache_key, {
+        "id": str(tenant.id),
+        "slug": tenant.slug,
+        "admin_key_hash": tenant.admin_key_hash,
+        "plan": tenant.plan,
+        "max_licenses": tenant.max_licenses,
+        "is_active": tenant.is_active,
+    }, ttl=_TENANT_CACHE_TTL)
+
     return tenant
 
 

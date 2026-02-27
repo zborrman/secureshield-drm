@@ -1,4 +1,24 @@
 groups:
+  # ── SLO recording rules ─────────────────────────────────────────────────────
+  # Pre-aggregate heavy expressions so alert rules and dashboards read fast.
+  - name: secureshield.slo.recording
+    rules:
+      - record: job:http_request_rate5m:sum
+        expr: sum(rate(http_request_duration_seconds_count[5m])) by (job)
+
+      - record: job:http_error_rate5m:ratio
+        expr: >
+          sum(rate(http_request_duration_seconds_count{status=~"5.."}[5m])) by (job)
+          /
+          sum(rate(http_request_duration_seconds_count[5m])) by (job)
+
+      - record: job:http_p99_latency5m:seconds
+        expr: >
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le, job)
+          )
+
+  # ── Alert rules ─────────────────────────────────────────────────────────────
   - name: secureshield.drm
     interval: 30s
     rules:

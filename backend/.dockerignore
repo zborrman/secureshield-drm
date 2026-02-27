@@ -1,0 +1,38 @@
+# ── Version control ───────────────────────────────────────────────────────────
+.git
+.gitignore
+
+# ── Python bytecode / caches ──────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Test artefacts ────────────────────────────────────────────────────────────
+tests/
+.coverage
+htmlcov/
+coverage.xml
+test_drm.db
+
+# ── Build / distribution ──────────────────────────────────────────────────────
+dist/
+build/
+*.egg-info/
+
+# ── Secrets & local config ────────────────────────────────────────────────────
+.env
+.env.*
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── IDE & OS artefacts ────────────────────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

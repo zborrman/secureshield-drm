@@ -1,0 +1,39 @@
+# ── Version control ───────────────────────────────────────────────────────────
+.git
+.github/
+.gitignore
+
+# ── Python backend (not needed for the frontend image) ────────────────────────
+backend/
+
+# ── Rust build cache (can be hundreds of MB) ──────────────────────────────────
+wasm/target/
+
+# ── Node.js ───────────────────────────────────────────────────────────────────
+node_modules/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/dist/
+
+# ── npm cache ─────────────────────────────────────────────────────────────────
+.npm/
+
+# ── Secrets & local config ────────────────────────────────────────────────────
+.env
+.env.*
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Test artefacts ────────────────────────────────────────────────────────────
+.coverage
+htmlcov/
+test_drm.db
+
+# ── IDE & OS artefacts ────────────────────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

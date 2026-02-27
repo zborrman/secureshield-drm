@@ -27,6 +27,7 @@ class CreateLicenseRequest(BaseModel):
     )
     is_paid: bool = Field(default=False, description="Mark license as pre-paid")
     expires_at: Optional[datetime] = Field(default=None, description="UTC expiry timestamp. None = never expires.")
+    owner_email: Optional[str] = Field(default=None, max_length=256, description="Contact email; license key is emailed if EMAIL_ENABLED=true.")
 
 
 class IssueOfflineTokenRequest(BaseModel):
@@ -62,9 +63,25 @@ class LicenseOut(BaseModel):
     max_sessions: int
     allowed_countries: Optional[str] = None
     expires_at: Optional[datetime] = None
+    owner_email: Optional[str] = None
     tenant_id: Optional[int] = None
 
     model_config = {"from_attributes": True}
+
+
+class BulkImportRow(BaseModel):
+    invoice_id: str
+    status: str            # "created" | "conflict" | "error"
+    plain_key: Optional[str] = None
+    error: Optional[str] = None
+
+
+class BulkImportResponse(BaseModel):
+    total: int
+    created: int
+    conflict: int
+    failed: int
+    rows: list[BulkImportRow]
 
 
 # ── Offline Token ──────────────────────────────────────────────────────────────

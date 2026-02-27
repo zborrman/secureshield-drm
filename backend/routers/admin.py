@@ -2,6 +2,7 @@
 Admin-only routes (require X-Admin-Key):
   GET  /health
   POST /admin/create-license
+  POST /admin/licenses/bulk
   GET  /admin/licenses
   GET  /admin/audit-log
   GET  /admin/alerts
@@ -32,7 +33,7 @@ import secrets as _secrets
 import jwt as _jwt
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request, Response, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -45,7 +46,9 @@ import geo_service
 import redis_service
 import anomaly_service
 import stripe_service
-from schemas import LicenseCreatedResponse, OfflineTokenIssued, AnomalyResponse
+import email_service
+import bulk_import
+from schemas import LicenseCreatedResponse, OfflineTokenIssued, AnomalyResponse, BulkImportResponse
 from config import (
     ADMIN_API_KEY,
     OFFLINE_TOKEN_SECRET,
@@ -128,6 +131,7 @@ async def create_license(
     allowed_countries: str = Query(default="", max_length=512),
     is_paid: bool = False,
     expires_at: datetime | None = None,
+    owner_email: str | None = Query(default=None, max_length=256),
     db: AsyncSession = Depends(get_db),
     _: None = Depends(require_admin),
 ):
@@ -141,14 +145,39 @@ async def create_license(
         max_sessions=max_sessions,
         allowed_countries=allowed_countries.upper().strip() or None,
         expires_at=expires_at,
+        owner_email=owner_email or None,
     )
     db.add(new_license)
     await db.commit()
+    if owner_email:
+        await email_service.send_license_key(owner_email, invoice_id, plain_key)
     return {
         "invoice_id": invoice_id,
         "plain_key_to_copy": plain_key,
         "warning": "Save the key — only the hash is stored.",
     }
+
+
+@router.post("/admin/licenses/bulk", status_code=200, response_model=BulkImportResponse)
+async def bulk_create_licenses(
+    file: UploadFile = File(..., description="CSV file with columns: invoice_id, owner_id, [max_sessions, allowed_countries, is_paid, expires_at, owner_email]"),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    """Import multiple licenses from a CSV file.
+
+    Returns per-row results: status is 'created', 'conflict' (duplicate invoice_id),
+    or 'error' (parse / DB failure).  A conflict or error on one row does not
+    affect the others — each row is committed independently.
+    """
+    if not file.content_type or "csv" not in file.content_type.lower():
+        if file.filename and not file.filename.lower().endswith(".csv"):
+            raise HTTPException(status_code=422, detail="Only CSV files are accepted")
+    csv_bytes = await file.read()
+    if len(csv_bytes) > 5 * 1024 * 1024:  # 5 MB hard cap
+        raise HTTPException(status_code=413, detail="CSV file exceeds 5 MB limit")
+    result = await bulk_import.process_bulk_csv(csv_bytes, db)
+    return result
 
 
 @router.get("/admin/licenses")
@@ -768,6 +797,7 @@ async def issue_offline_token(
 @router.delete("/admin/offline-token/{token_id}")
 async def revoke_offline_token(
     token_id: str,
+    reason: str | None = Query(default=None, max_length=256, description="Optional reason for revocation"),
     db: AsyncSession = Depends(get_db),
     _: None = Depends(require_admin),
 ):
@@ -775,8 +805,9 @@ async def revoke_offline_token(
     if not row:
         raise HTTPException(status_code=404, detail="Token not found")
     row.is_revoked = True
+    row.revocation_reason = reason or None
     await db.commit()
-    return {"status": "revoked", "token_id": token_id}
+    return {"status": "revoked", "token_id": token_id, "revocation_reason": row.revocation_reason}
 
 
 @router.get("/admin/offline-tokens")
@@ -802,6 +833,7 @@ async def list_offline_tokens(
             "max_offline_hours": t.max_offline_hours,
             "device_hint": t.device_hint,
             "is_revoked": t.is_revoked,
+            "revocation_reason": t.revocation_reason,
             "is_expired": now >= t.valid_until,
             "hours_remaining": max(
                 0, int((t.valid_until - now).total_seconds() // 3600)

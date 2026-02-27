@@ -28,6 +28,7 @@ class License(Base):
     max_sessions     = Column(Integer, default=1)       # concurrent viewing slots allowed
     allowed_countries = Column(String, nullable=True)  # NULL = unrestricted; "US,GB" = restrict
     expires_at       = Column(DateTime, nullable=True)  # NULL = never expires
+    owner_email      = Column(String, nullable=True)    # optional contact address for key delivery
     tenant_id        = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
 
 
@@ -79,9 +80,10 @@ class OfflineToken(Base):
     issued_at        = Column(DateTime, default=datetime.utcnow)
     valid_until      = Column(DateTime)                 # UTC expiry stored server-side for listing
     max_offline_hours = Column(Integer)
-    is_revoked       = Column(Boolean, default=False)
-    device_hint      = Column(String, nullable=True)    # free-text label set by admin (e.g. "Alice laptop")
-    tenant_id        = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
+    is_revoked           = Column(Boolean, default=False)
+    device_hint          = Column(String, nullable=True)    # free-text label set by admin (e.g. "Alice laptop")
+    revocation_reason    = Column(String, nullable=True)    # optional reason stored when revoked
+    tenant_id            = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
 
 
 class VaultContent(Base):

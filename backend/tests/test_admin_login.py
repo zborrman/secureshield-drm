@@ -1,7 +1,12 @@
 """
 Tests for POST /admin/login (TOTP / admin session JWT flow).
 """
+import os
 import pytest
+
+# Read the key from the environment so these tests work in any CI configuration
+# where ADMIN_API_KEY may differ from the conftest.py default ("test-admin-key").
+_ADMIN_KEY = os.environ.get("ADMIN_API_KEY", "test-admin-key")
 
 
 # ── Login returns JWT ──────────────────────────────────────────────────────────
@@ -9,7 +14,7 @@ import pytest
 @pytest.mark.asyncio
 async def test_admin_login_valid_key_returns_token(client, db_session):
     """Valid API key → 200 with token and expires_in."""
-    resp = await client.post("/admin/login?api_key=test-admin-key")
+    resp = await client.post(f"/admin/login?api_key={_ADMIN_KEY}")
     assert resp.status_code == 200
     data = resp.json()
     assert "token" in data
@@ -28,7 +33,7 @@ async def test_admin_login_wrong_key_returns_401(client, db_session):
 @pytest.mark.asyncio
 async def test_bearer_token_grants_admin_access(client, db_session):
     """JWT from /admin/login works as Authorization: Bearer on admin endpoints."""
-    login = await client.post("/admin/login?api_key=test-admin-key")
+    login = await client.post(f"/admin/login?api_key={_ADMIN_KEY}")
     assert login.status_code == 200
     token = login.json()["token"]
 
@@ -56,7 +61,7 @@ async def test_totp_setup_without_secret_returns_disabled(client, db_session):
     """Without ADMIN_TOTP_SECRET set, /admin/totp/setup returns enabled=false."""
     res = await client.get(
         "/admin/totp/setup",
-        headers={"X-Admin-Key": "test-admin-key"},
+        headers={"X-Admin-Key": _ADMIN_KEY},
     )
     assert res.status_code == 200
     assert res.json()["enabled"] is False

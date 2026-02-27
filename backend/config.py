@@ -19,6 +19,13 @@ OFFLINE_TOKEN_SECRET = os.getenv("OFFLINE_TOKEN_SECRET", "")
 VAULT_TOKEN_SECRET   = os.getenv("VAULT_TOKEN_SECRET", "")
 SUPER_ADMIN_KEY      = os.getenv("SUPER_ADMIN_KEY", "")
 
+# ── Admin TOTP / 2FA ──────────────────────────────────────────────────────────
+# Base-32 TOTP secret (RFC 4226).  Leave empty to disable TOTP enforcement.
+# Generate with: python -c "import pyotp; print(pyotp.random_base32())"
+ADMIN_TOTP_SECRET = os.getenv("ADMIN_TOTP_SECRET", "")
+# TTL (seconds) for the short-lived admin session JWTs issued by /admin/login.
+ADMIN_SESSION_TTL = int(os.getenv("ADMIN_SESSION_TTL", "900"))   # default 15 min
+
 
 def validate_secrets() -> None:
     """Fail fast at startup if any required secret is missing or too short.

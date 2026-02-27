@@ -55,11 +55,63 @@ from config import (
     SESSION_ACTIVE_MINUTES,
     BRUTE_FORCE_WINDOW_MINUTES,
     BRUTE_FORCE_MAX_FAILS,
+    ADMIN_TOTP_SECRET,
+    ADMIN_SESSION_TTL,
 )
+from dependencies import _admin_session_secret
 from sqlalchemy import text
 from rate_limit import limiter, ADMIN_WRITE_LIMIT
 
 router = APIRouter()
+
+
+# ── Admin login (issues short-lived session JWT) ───────────────────────────────
+
+@router.post("/admin/login")
+async def admin_login(
+    api_key:   str = Query(...),
+    totp_code: str = Query(default=""),
+):
+    """Exchange API key (+ optional TOTP code) for a short-lived admin session JWT.
+
+    - When ``ADMIN_TOTP_SECRET`` is configured, a valid 6-digit TOTP code is required.
+    - Returns ``{"token": "<jwt>", "expires_in": <seconds>}``.
+    - The token can be passed as ``Authorization: Bearer <token>`` on all admin endpoints.
+    """
+    import time as _time
+    if not ADMIN_API_KEY or not _hmac.compare_digest(api_key, ADMIN_API_KEY):
+        raise HTTPException(status_code=401, detail="Invalid admin API key")
+
+    if ADMIN_TOTP_SECRET:
+        import pyotp
+        if not totp_code:
+            raise HTTPException(status_code=401, detail="TOTP code required (TOTP is enabled)")
+        totp = pyotp.TOTP(ADMIN_TOTP_SECRET)
+        if not totp.verify(totp_code, valid_window=1):
+            raise HTTPException(status_code=401, detail="Invalid or expired TOTP code")
+
+    now = int(_time.time())
+    token = _jwt.encode(
+        {"sub": "admin", "type": "admin_session", "iat": now, "exp": now + ADMIN_SESSION_TTL},
+        _admin_session_secret(),
+        algorithm="HS256",
+    )
+    return {"token": token, "expires_in": ADMIN_SESSION_TTL}
+
+
+@router.get("/admin/totp/setup")
+async def admin_totp_setup(_: None = Depends(require_admin)):
+    """Return TOTP provisioning URI for use in an authenticator app.
+
+    Requires ``ADMIN_TOTP_SECRET`` to be set in the environment.
+    If not set, returns ``{"enabled": false}``.
+    """
+    if not ADMIN_TOTP_SECRET:
+        return {"enabled": False, "message": "ADMIN_TOTP_SECRET not configured"}
+    import pyotp
+    totp = pyotp.TOTP(ADMIN_TOTP_SECRET)
+    uri = totp.provisioning_uri("admin@secureshield", issuer_name="SecureShield DRM")
+    return {"enabled": True, "provisioning_uri": uri}
 
 
 # ── Health ─────────────────────────────────────────────────────────────────────

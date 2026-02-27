@@ -15,6 +15,8 @@ export default function SecureContent({ encryptedData = [] }: { encryptedData?: 
     const [sessionId, setSessionId] = useState<number | null>(null);
     const [offlineMode, setOfflineMode] = useState<OfflineTokenStatus | null>(null);
     const [isRevoked, setIsRevoked] = useState(false);
+    // P3.2 — watermark fingerprint returned by /verify-license
+    const [fingerprint, setFingerprint] = useState<number | null>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
 
     // Heartbeat runs automatically whenever sessionId is set.
@@ -34,7 +36,7 @@ export default function SecureContent({ encryptedData = [] }: { encryptedData?: 
                 setViewer(new module.SecureViewer());
                 setIsReady(true);
             } catch (err) {
-                console.error('❌ Failed to load Wasm module:', err);
+                console.error('Failed to load Wasm module:', err);
             }
         };
         loadWasm();
@@ -49,13 +51,14 @@ export default function SecureContent({ encryptedData = [] }: { encryptedData?: 
             try {
                 decrypted = viewer.decrypt_content(new Uint8Array(encryptedData));
             } catch {
-                alert('Ошибка дешифровки: Ключ валиден, но данные повреждены.');
+                alert('Decryption error: key is valid but content data is corrupted.');
                 return;
             }
             renderToCanvas(decrypted);
 
-            // 2. Try to register an online analytics session
             const invoiceId = localStorage.getItem('invoice_id') ?? 'unknown';
+
+            // 2. Try to register an online analytics session
             try {
                 const res = await fetch(
                     `${API}/analytics/start?invoice_id=${encodeURIComponent(invoiceId)}&content_id=main`,
@@ -80,13 +83,26 @@ export default function SecureContent({ encryptedData = [] }: { encryptedData?: 
                         status.reason === 'no_token'
                             ? 'No network connection and no offline token found. Ask your admin to issue an offline token.'
                             : status.reason === 'expired'
-                              ? 'Your offline token has expired. Reconnect to the network or ask your admin to issue a new token.'
+                              ? 'Your offline token has expired. Reconnect to the network or ask your admin for a new token.'
                               : 'No network connection and the offline token could not be verified.'
                     );
                 }
             }
+
+            // 4. P3.2 — fetch watermark fingerprint from backend (best-effort)
+            try {
+                const fpRes = await fetch(
+                    `${API}/verify-license?invoice_id=${encodeURIComponent(invoiceId)}&license_key=${encodeURIComponent(key)}`
+                );
+                if (fpRes.ok) {
+                    const { fingerprint: fp } = await fpRes.json();
+                    if (typeof fp === 'number') setFingerprint(fp);
+                }
+            } catch {
+                // fingerprint display is non-critical — ignore network failures
+            }
         } else {
-            alert('Доступ запрещен: Неверный лицензионный ключ.');
+            alert('Access denied: invalid license key.');
         }
     };
 
@@ -120,7 +136,7 @@ export default function SecureContent({ encryptedData = [] }: { encryptedData?: 
                     </>
                 ) : (
                     <div className="animate-pulse text-slate-500 text-xs font-mono">
-                        Загрузка защищенного окружения...
+                        Loading secure enclave...
                     </div>
                 )}
             </div>
@@ -147,12 +163,23 @@ export default function SecureContent({ encryptedData = [] }: { encryptedData?: 
                 )}
             </div>
 
+            {/* P3.2 — watermark fingerprint badge */}
+            {fingerprint !== null && (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-indigo-900/10 border border-indigo-900/30">
+                    <span className="text-[9px] uppercase tracking-wider text-slate-500 font-bold">Watermark ID</span>
+                    <code className="text-indigo-400 font-mono text-xs">{fingerprint}</code>
+                    <span className="text-[9px] text-slate-600 italic ml-auto">
+                        Your copy is uniquely watermarked with this identifier.
+                    </span>
+                </div>
+            )}
+
             {isReady && (
                 <div className="flex gap-2">
                     <input
                         type="password"
                         id="key-input"
-                        placeholder="Лицензионный ключ"
+                        placeholder="License key"
                         className="flex-1 bg-slate-950 border border-slate-800 p-2 rounded text-sm focus:border-blue-500 outline-none transition"
                     />
                     <button

@@ -2,6 +2,7 @@
 Shared FastAPI dependencies and utility functions used across all routers.
 """
 import hmac as _hmac
+import jwt as _jwt
 from fastapi import Depends, HTTPException, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -21,8 +22,37 @@ async def get_db():
 
 # ── Auth dependencies ──────────────────────────────────────────────────────────
 
-async def require_admin(x_admin_key: str = Header(default="")):
-    """FastAPI dependency: verifies X-Admin-Key header via timing-safe comparison."""
+def _admin_session_secret() -> str:
+    """Derive the signing secret for admin session JWTs from the master API key."""
+    return ADMIN_API_KEY + "-admin-session"
+
+
+async def require_admin(
+    authorization: str = Header(default=""),
+    x_admin_key: str = Header(default=""),
+):
+    """FastAPI dependency: accepts either
+    - ``Authorization: Bearer <admin-session-jwt>`` (issued by POST /admin/login), or
+    - ``X-Admin-Key: <raw-api-key>`` (legacy / direct access).
+    """
+    # ── Option 1: short-lived admin session JWT ──────────────────────────────
+    if authorization.startswith("Bearer "):
+        token = authorization[7:]
+        try:
+            _jwt.decode(token, _admin_session_secret(), algorithms=["HS256"])
+            return  # valid session JWT
+        except _jwt.ExpiredSignatureError:
+            raise HTTPException(
+                status_code=401,
+                detail="Admin session expired — please log in again",
+            )
+        except _jwt.InvalidTokenError:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid admin session token",
+            )
+
+    # ── Option 2: raw API key (legacy / backward-compatible) ─────────────────
     if not ADMIN_API_KEY or not _hmac.compare_digest(x_admin_key, ADMIN_API_KEY):
         raise HTTPException(
             status_code=401,

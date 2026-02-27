@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import QRCode from 'react-qr-code';
 import { storeOfflineToken } from '../hooks/useOfflineToken';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8001';
@@ -27,6 +28,10 @@ export default function OfflineTokenManager({ adminKey }: { adminKey: string }) 
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     const [copied, setCopied] = useState(false);
+    // P3.1 — QR code toggle
+    const [showQr, setShowQr] = useState(false);
+    // P4.4 — confirm before revoke
+    const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null);
 
     const h = { 'X-Admin-Key': adminKey };
 
@@ -42,6 +47,7 @@ export default function OfflineTokenManager({ adminKey }: { adminKey: string }) 
         setLoading(true);
         setError('');
         setIssuedToken('');
+        setShowQr(false);
         try {
             const params = new URLSearchParams({
                 invoice_id: invoiceId.trim(),
@@ -72,14 +78,13 @@ export default function OfflineTokenManager({ adminKey }: { adminKey: string }) 
             method: 'DELETE',
             headers: h,
         });
+        setConfirmRevoke(null);
         fetchTokens();
     };
 
     const handleCopy = () => {
         if (!issuedToken) return;
         navigator.clipboard.writeText(issuedToken);
-        // Also persist into localStorage under the invoiceId so the viewer
-        // can use it immediately on this machine
         storeOfflineToken(issuedForInvoice, issuedToken);
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
@@ -150,23 +155,44 @@ export default function OfflineTokenManager({ adminKey }: { adminKey: string }) 
                 </div>
             )}
 
-            {/* Newly issued token */}
+            {/* Newly issued token — copy + QR */}
             {issuedToken && (
-                <div className="mb-6 p-4 rounded-lg bg-indigo-900/10 border border-indigo-900/30 space-y-2">
+                <div className="mb-6 p-4 rounded-lg bg-indigo-900/10 border border-indigo-900/30 space-y-3">
                     <p className="text-[9px] uppercase tracking-wider text-slate-500 font-bold">
                         New Token — copy and deliver to the licensee
                     </p>
                     <code className="block bg-black text-indigo-300 p-3 rounded text-[10px] font-mono break-all border border-indigo-900/30">
                         {issuedToken}
                     </code>
-                    <div className="flex gap-2">
+
+                    <div className="flex gap-2 flex-wrap">
                         <button
                             onClick={handleCopy}
                             className="text-xs font-bold text-indigo-400 border border-indigo-900/40 px-3 py-1.5 rounded hover:bg-indigo-900/20 transition"
                         >
                             {copied ? '✓ Copied & saved locally' : '⎘ Copy + save to localStorage'}
                         </button>
+                        {/* P3.1 — QR code toggle */}
+                        <button
+                            onClick={() => setShowQr((v) => !v)}
+                            className="text-xs font-bold text-indigo-400 border border-indigo-900/40 px-3 py-1.5 rounded hover:bg-indigo-900/20 transition"
+                        >
+                            {showQr ? '▲ Hide QR' : '▦ Show QR Code'}
+                        </button>
                     </div>
+
+                    {/* P3.1 — QR code for air-gapped delivery */}
+                    {showQr && (
+                        <div className="flex flex-col items-center gap-2 pt-1">
+                            <div className="bg-white p-3 rounded-lg">
+                                <QRCode value={issuedToken} size={180} />
+                            </div>
+                            <p className="text-[9px] text-slate-600 italic text-center">
+                                Scan with a mobile device for air-gapped delivery — no network required.
+                            </p>
+                        </div>
+                    )}
+
                     <p className="text-[9px] text-slate-600 italic">
                         Saving to localStorage allows the viewer on this machine to use it offline immediately.
                     </p>
@@ -191,7 +217,9 @@ export default function OfflineTokenManager({ adminKey }: { adminKey: string }) 
                             {tokens.map((t) => (
                                 <tr key={t.token_id} className="hover:bg-slate-800/30 transition">
                                     <td className="py-2 pr-4 font-mono text-blue-400">{t.invoice_id}</td>
-                                    <td className="py-2 pr-4 text-slate-400">{t.device_hint ?? <span className="text-slate-600 italic">—</span>}</td>
+                                    <td className="py-2 pr-4 text-slate-400">
+                                        {t.device_hint ?? <span className="text-slate-600 italic">—</span>}
+                                    </td>
                                     <td className="py-2 pr-4 text-slate-500 font-mono">
                                         {new Date(t.issued_at).toLocaleDateString()}
                                     </td>
@@ -199,14 +227,33 @@ export default function OfflineTokenManager({ adminKey }: { adminKey: string }) 
                                         {new Date(t.valid_until).toLocaleString()}
                                     </td>
                                     <td className="py-2 pr-4">{statusChip(t)}</td>
+                                    {/* P4.4 — confirm before revoke */}
                                     <td className="py-2">
                                         {!t.is_revoked && !t.is_expired && (
-                                            <button
-                                                onClick={() => handleRevoke(t.token_id)}
-                                                className="text-[10px] text-red-500 hover:text-red-400 font-mono transition"
-                                            >
-                                                Revoke
-                                            </button>
+                                            confirmRevoke === t.token_id ? (
+                                                <span className="flex items-center gap-1.5">
+                                                    <span className="text-[9px] text-red-400">Revoke?</span>
+                                                    <button
+                                                        onClick={() => handleRevoke(t.token_id)}
+                                                        className="text-[9px] bg-red-600 text-white px-1.5 py-0.5 rounded font-bold"
+                                                    >
+                                                        Yes
+                                                    </button>
+                                                    <button
+                                                        onClick={() => setConfirmRevoke(null)}
+                                                        className="text-[9px] text-slate-500 hover:text-slate-400 px-1.5 py-0.5 rounded"
+                                                    >
+                                                        No
+                                                    </button>
+                                                </span>
+                                            ) : (
+                                                <button
+                                                    onClick={() => setConfirmRevoke(t.token_id)}
+                                                    className="text-[10px] text-red-500 hover:text-red-400 font-mono transition"
+                                                >
+                                                    Revoke
+                                                </button>
+                                            )
                                         )}
                                     </td>
                                 </tr>

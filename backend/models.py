@@ -27,6 +27,7 @@ class License(Base):
     owner_id         = Column(String)
     max_sessions     = Column(Integer, default=1)       # concurrent viewing slots allowed
     allowed_countries = Column(String, nullable=True)  # NULL = unrestricted; "US,GB" = restrict
+    expires_at       = Column(DateTime, nullable=True)  # NULL = never expires
     tenant_id        = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
 
 
@@ -59,6 +60,7 @@ class ViewAnalytics(Base):
 
 class LeakReport(Base):
     __tablename__ = "leak_reports"
+    __table_args__ = (UniqueConstraint("invoice_id", name="uq_leak_invoice"),)
 
     id                   = Column(String, primary_key=True)          # UUID4 string
     generated_at         = Column(DateTime, default=datetime.utcnow)

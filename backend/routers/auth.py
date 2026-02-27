@@ -32,6 +32,7 @@ from config import (
     OFFLINE_TOKEN_SECRET,
     SESSION_ACTIVE_MINUTES,
     BOT_THRESHOLD_MS,
+    GEO_WEBHOOK_URL,
 )
 from rate_limit import limiter, ANALYTICS_LIMIT
 
@@ -73,7 +74,18 @@ async def verify(
                 "license_key":       license_record.license_key,
                 "allowed_countries": license_record.allowed_countries,
                 "owner_id":          license_record.owner_id,
+                "expires_at":        license_record.expires_at.isoformat() if license_record.expires_at else None,
             })
+
+    # Expiry check: 410 Gone if the license has a set expiry that has passed
+    if license_record:
+        raw_exp = getattr(license_record, "expires_at", None)
+        # cached records store expires_at as an ISO string; DB records as datetime
+        if isinstance(raw_exp, str):
+            from datetime import datetime as _dt
+            raw_exp = _dt.fromisoformat(raw_exp)
+        if raw_exp is not None and datetime.utcnow() > raw_exp:
+            raise HTTPException(status_code=410, detail="License expired")
 
     # Brute-force protection: sliding window — only count failures within the last N minutes
     brute_window = datetime.utcnow() - timedelta(minutes=BRUTE_FORCE_WINDOW_MINUTES)
@@ -101,6 +113,7 @@ async def verify(
                 db, invoice_id, client_ip, False,
                 f"GEO_BLOCKED:{country} | {user_agent}",
             )
+            await geo_service.fire_geo_block_webhook(GEO_WEBHOOK_URL, invoice_id, country, client_ip)
             raise HTTPException(
                 status_code=403,
                 detail=f"Access denied: your region ({country}) is not permitted for this license",
@@ -261,10 +274,17 @@ async def analytics_start(
     if not license_record:
         raise HTTPException(status_code=404, detail="License not found")
 
+    # Expiry check
+    if license_record.expires_at is not None and datetime.utcnow() > license_record.expires_at:
+        raise HTTPException(status_code=410, detail="License expired")
+
     # Geofence check (before is_paid so blocked regions see 403, not 402)
     if license_record.allowed_countries:
         country = await geo_service.get_country_code(request.client.host)
         if not geo_service.is_permitted(country, license_record.allowed_countries):
+            await geo_service.fire_geo_block_webhook(
+                GEO_WEBHOOK_URL, invoice_id, country, request.client.host
+            )
             raise HTTPException(
                 status_code=403,
                 detail=f"Region not permitted: {country}",

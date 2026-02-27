@@ -26,6 +26,7 @@ class CreateLicenseRequest(BaseModel):
         description="Comma-separated ISO 3166-1 alpha-2 country codes, e.g. 'US,GB,DE'. Empty = unrestricted.",
     )
     is_paid: bool = Field(default=False, description="Mark license as pre-paid")
+    expires_at: Optional[datetime] = Field(default=None, description="UTC expiry timestamp. None = never expires.")
 
 
 class IssueOfflineTokenRequest(BaseModel):
@@ -60,6 +61,7 @@ class LicenseOut(BaseModel):
     is_paid: bool
     max_sessions: int
     allowed_countries: Optional[str] = None
+    expires_at: Optional[datetime] = None
     tenant_id: Optional[int] = None
 
     model_config = {"from_attributes": True}

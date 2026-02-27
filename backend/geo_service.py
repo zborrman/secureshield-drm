@@ -60,3 +60,19 @@ def is_permitted(country: str, allowed_countries: str | None) -> bool:
         return True
     allowed = {c.strip().upper() for c in allowed_countries.split(",") if c.strip()}
     return country.upper() in allowed
+
+
+async def fire_geo_block_webhook(url: str, invoice_id: str, country: str, ip: str) -> None:
+    """POST a JSON payload to *url* when a geo-block event occurs.
+
+    Best-effort: any exception is silently swallowed so a misconfigured or
+    unreachable webhook URL never blocks the primary request flow.
+    """
+    if not url:
+        return
+    payload = {"event": "geo_blocked", "invoice_id": invoice_id, "country": country, "ip": ip}
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            await client.post(url, json=payload)
+    except Exception:
+        pass

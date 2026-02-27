@@ -75,6 +75,10 @@ ALLOWED_VAULT_MIME: frozenset = frozenset({
     "text/plain",
 })
 
+# ── Geo-block webhook ─────────────────────────────────────────────────────────
+# Optional URL to call when a request is geo-blocked.  Empty string = disabled.
+GEO_WEBHOOK_URL = os.getenv("GEO_WEBHOOK_URL", "")
+
 # ── CORS ──────────────────────────────────────────────────────────────────────
 # Strip whitespace from each origin so "http://a.com, http://b.com" parses correctly.
 CORS_ORIGINS: list[str] = [

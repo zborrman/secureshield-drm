@@ -127,6 +127,7 @@ async def create_license(
     max_sessions: int = Query(default=1, ge=1, le=100),
     allowed_countries: str = Query(default="", max_length=512),
     is_paid: bool = False,
+    expires_at: datetime | None = None,
     db: AsyncSession = Depends(get_db),
     _: None = Depends(require_admin),
 ):
@@ -139,6 +140,7 @@ async def create_license(
         is_paid=is_paid,
         max_sessions=max_sessions,
         allowed_countries=allowed_countries.upper().strip() or None,
+        expires_at=expires_at,
     )
     db.add(new_license)
     await db.commit()
@@ -371,6 +373,7 @@ async def update_geo_restriction(
 async def generate_leak_proof(
     invoice_id: str = "",
     fingerprint: str = "",
+    force: bool = False,
     db: AsyncSession = Depends(get_db),
     _: None = Depends(require_admin),
 ):
@@ -387,6 +390,21 @@ async def generate_leak_proof(
         license_record = result.scalars().first()
         if not license_record:
             raise HTTPException(status_code=404, detail=f"License not found: {invoice_id}")
+
+        # Dedup: check for existing report for this invoice_id
+        existing_report = await db.execute(
+            select(models.LeakReport).where(models.LeakReport.invoice_id == invoice_id)
+        )
+        existing_report = existing_report.scalars().first()
+        if existing_report:
+            if not force:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Report already exists for {invoice_id}. Use ?force=true to regenerate.",
+                )
+            # force=True: delete existing report before creating a new one
+            await db.delete(existing_report)
+            await db.commit()
     else:
         try:
             submitted_fp = int(fingerprint)

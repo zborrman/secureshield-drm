@@ -117,3 +117,12 @@ CHAIRMAN_MODEL: str = os.getenv("CHAIRMAN_MODEL", "anthropic/claude-sonnet-4-6")
 
 # How long (seconds) to cache a council verdict in Redis before re-running.
 COUNCIL_CACHE_TTL: int = int(os.getenv("COUNCIL_CACHE_TTL", "1800"))  # default 30 min
+
+# ── Metabase embedded analytics (optional) ────────────────────────────────────
+# Must match "Embedding secret key" in Metabase Admin → Settings → Embedding.
+# When set, GET /admin/metabase/embed-token issues signed iFrame URLs.
+# Leave empty to disable the embed-token endpoint (returns 503).
+METABASE_SECRET_KEY: str = os.getenv("METABASE_SECRET_KEY", "")
+
+# Public URL where Metabase is reachable (used to construct embed iFrame URLs).
+METABASE_SITE_URL: str = os.getenv("METABASE_SITE_URL", "http://localhost:3002")

@@ -21,6 +21,7 @@ Admin-only routes (require X-Admin-Key):
   GET  /admin/anomalies
   GET  /admin/anomalies/summary
   GET  /admin/anomalies/enriched
+  GET  /admin/metabase/embed-token
   GET  /admin/gdpr/export/{invoice_id}
   DELETE /admin/gdpr/purge/{invoice_id}
   GET  /admin/stripe/dlq
@@ -1054,3 +1055,55 @@ async def retry_stripe_event(
 
     await db.commit()
     return {"status": event.status, "attempts": event.attempts}
+
+
+# ── Metabase embedded analytics ─────────────────────────────────────────────────
+
+@router.get("/admin/metabase/embed-token")
+async def get_metabase_embed_token(
+    dashboard_id: int = Query(..., ge=1, description="Metabase dashboard numeric ID"),
+    expires_in: int = Query(default=600, ge=60, le=3600, description="Token TTL in seconds"),
+    _: None = Depends(require_admin),
+):
+    """
+    Return a signed HS256 JWT and the corresponding iFrame embed URL for a
+    specific Metabase dashboard.
+
+    The JWT is signed with METABASE_SECRET_KEY which must match the
+    "Embedding secret key" configured in Metabase Admin → Settings → Embedding.
+
+    Usage in the frontend:
+        const { embed_url } = await fetch('/admin/metabase/embed-token?dashboard_id=1')
+        // render: <iframe src={embed_url} />
+
+    Requires METABASE_SECRET_KEY to be set — returns 503 otherwise.
+    """
+    import time as _time
+    import config as _config
+
+    if not _config.METABASE_SECRET_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Metabase embedding is not configured. "
+                "Set METABASE_SECRET_KEY to the value from "
+                "Metabase Admin → Settings → Embedding."
+            ),
+        )
+
+    payload = {
+        "resource": {"dashboard": dashboard_id},
+        "params": {},
+        "exp": int(_time.time()) + expires_in,
+    }
+    token = _jwt.encode(payload, _config.METABASE_SECRET_KEY, algorithm="HS256")
+    embed_url = (
+        f"{_config.METABASE_SITE_URL}/embed/dashboard/{token}"
+        "#bordered=true&titled=true"
+    )
+    return {
+        "embed_url": embed_url,
+        "token": token,
+        "dashboard_id": dashboard_id,
+        "expires_in": expires_in,
+    }

@@ -13,6 +13,8 @@ services:
       retries: 5
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # Creates the read-only metabase_reader role on first DB init.
+      - ./infra/metabase/init-reader.sql:/docker-entrypoint-initdb.d/01-metabase-reader.sql:ro
 
   redis:
     image: redis:7-alpine
@@ -131,7 +133,44 @@ services:
       - "16686:16686"
       - "4317:4317"
 
+  # ── Metabase BI — connects to the same PostgreSQL via read-only user ──────────
+  # Access: http://localhost:3002
+  # First-run setup wizard: create admin account, connection is pre-populated
+  # via MB_DB_* env vars (Metabase stores its own metadata in metabase_db).
+  metabase:
+    image: metabase/metabase:latest
+    container_name: secureshield_metabase
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Metabase's own metadata database (separate from SecureShield data)
+      MB_DB_TYPE: postgres
+      MB_DB_DBNAME: metabase_db
+      MB_DB_PORT: 5432
+      MB_DB_USER: user
+      MB_DB_PASS: password
+      MB_DB_HOST: db
+      # Embedding — must match METABASE_SECRET_KEY in .env
+      MB_EMBEDDING_SECRET_KEY: ${METABASE_SECRET_KEY:-changeme-set-in-env-32chars-min!}
+      # Site URL used for constructing embed URLs
+      MB_SITE_URL: ${METABASE_SITE_URL:-http://localhost:3002}
+      # Skip the email setup prompt on first run
+      MB_SETUP_TOKEN: ${METABASE_SETUP_TOKEN:-}
+      JAVA_OPTS: "-Xmx512m"
+    ports:
+      - "3002:3000"
+    volumes:
+      - metabase_data:/metabase-data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
 volumes:
   postgres_data:
   prometheus_data:
   grafana_data:
+  metabase_data:

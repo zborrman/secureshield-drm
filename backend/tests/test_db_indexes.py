@@ -2,14 +2,14 @@
 Category B — Database performance indexes (migration 0004).
 
 Tests:
-  1. All 5 index names from migration 0004 exist in SQLite after table creation
+  1. All 5 index names from migration 0004 exist in the DB after table creation
   2. All index names follow the idx_ convention
   3. Audit-log ORDER BY timestamp DESC query executes without error
   4. Analytics compound query (license_id + tenant_id) executes without error
 """
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
+from sqlalchemy import text, inspect as sa_inspect
 
 
 _EXPECTED_INDEXES = [
@@ -20,18 +20,28 @@ _EXPECTED_INDEXES = [
     "idx_licenses_is_paid",
 ]
 
+_INDEXED_TABLES = ["audit_logs", "view_analytics", "licenses"]
+
 
 @pytest.mark.asyncio
 async def test_migration_0004_indexes_exist(db_session: AsyncSession):
     """All 5 indexes from migration 0004 must exist in the test DB after create_all."""
-    # SQLite stores indexes in sqlite_master
-    result = await db_session.execute(
-        text("SELECT name FROM sqlite_master WHERE type='index'")
-    )
-    existing = {row[0] for row in result.fetchall()}
+
+    def _collect_indexes(conn):
+        inspector = sa_inspect(conn)
+        names = set()
+        for table in _INDEXED_TABLES:
+            for idx in inspector.get_indexes(table):
+                if idx.get("name"):
+                    names.add(idx["name"])
+        return names
+
+    async with db_session.bind.connect() as conn:
+        existing = await conn.run_sync(_collect_indexes)
+
     for idx_name in _EXPECTED_INDEXES:
         assert idx_name in existing, (
-            f"Index '{idx_name}' not found in sqlite_master. "
+            f"Index '{idx_name}' not found. "
             f"Existing indexes: {sorted(existing)}"
         )
 

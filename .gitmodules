@@ -1,0 +1,3 @@
+[submodule "vendor/llm-council"]
+	path = vendor/llm-council
+	url = https://github.com/karpathy/llm-council

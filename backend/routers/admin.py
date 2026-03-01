@@ -20,6 +20,7 @@ Admin-only routes (require X-Admin-Key):
   GET  /admin/offline-tokens
   GET  /admin/anomalies
   GET  /admin/anomalies/summary
+  GET  /admin/anomalies/enriched
   GET  /admin/gdpr/export/{invoice_id}
   DELETE /admin/gdpr/purge/{invoice_id}
   GET  /admin/stripe/dlq
@@ -48,6 +49,7 @@ import anomaly_service
 import stripe_service
 import email_service
 import bulk_import
+import llm_council_service
 from schemas import LicenseCreatedResponse, OfflineTokenIssued, AnomalyResponse, BulkImportResponse
 from config import (
     ADMIN_API_KEY,
@@ -922,6 +924,59 @@ async def get_anomalies_summary(
         db, hours, min_score=0, skip_geo=skip_geo, tenant_id=None
     )
     return {"summary": summary, "top_findings": findings[:3]}
+
+
+@router.get("/admin/anomalies/enriched")
+async def get_enriched_anomalies(
+    hours: float = 24.0,
+    min_score: int = Query(default=40, ge=0, le=100),
+    limit: int = Query(default=5, ge=1, le=20),
+    skip_geo: bool = False,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    """
+    Run statistical anomaly detection then enrich the top findings with
+    LLM Council (3-stage deliberation via OpenRouter).
+
+    Results are cached in Redis for COUNCIL_CACHE_TTL seconds so repeated
+    calls are fast and don't consume extra API credits.
+
+    Requires OPENROUTER_API_KEY to be set — returns 503 otherwise.
+    """
+    import config as _config
+
+    if not _config.OPENROUTER_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "AI enrichment is not configured. "
+                "Set OPENROUTER_API_KEY to enable this endpoint."
+            ),
+        )
+
+    findings, summary = await anomaly_service.run_anomaly_analysis(
+        db, hours, min_score, skip_geo, tenant_id=None
+    )
+    top = sorted(findings, key=lambda f: f["score"], reverse=True)[:limit]
+
+    enriched = []
+    for finding in top:
+        cache_key = f"council:{finding['anomaly_id']}"
+        cached = await redis_service.cache_get(cache_key)
+        if cached:
+            enriched.append(cached)
+            continue
+
+        result = await llm_council_service.run_council(finding)
+        await redis_service.cache_set(cache_key, result, ttl=_config.COUNCIL_CACHE_TTL)
+        enriched.append(result)
+
+    return {
+        "enriched_findings": enriched,
+        "total": len(enriched),
+        "summary": summary,
+    }
 
 
 # ── Stripe Dead-Letter Queue ───────────────────────────────────────────────────

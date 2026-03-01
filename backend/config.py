@@ -96,3 +96,24 @@ CORS_ORIGINS: list[str] = [
     for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
     if o.strip()
 ]
+
+# ── LLM Council (AI anomaly enrichment — optional) ────────────────────────────
+# OpenRouter API key: https://openrouter.ai  — leave empty to disable the feature.
+# When empty, GET /admin/anomalies/enriched returns 503 with a clear message.
+OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
+
+# Council member models queried in parallel during Stage 1 and Stage 2.
+# Any OpenRouter-compatible model ID is accepted.
+import json as _json
+COUNCIL_MODELS: list[str] = _json.loads(
+    os.getenv(
+        "COUNCIL_MODELS",
+        '["openai/gpt-4o-mini","anthropic/claude-haiku-4-5-20251001","google/gemini-flash-1.5"]',
+    )
+)
+
+# Chairman model that synthesizes the council deliberation into a final verdict.
+CHAIRMAN_MODEL: str = os.getenv("CHAIRMAN_MODEL", "anthropic/claude-sonnet-4-6")
+
+# How long (seconds) to cache a council verdict in Redis before re-running.
+COUNCIL_CACHE_TTL: int = int(os.getenv("COUNCIL_CACHE_TTL", "1800"))  # default 30 min

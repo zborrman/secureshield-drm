@@ -21,6 +21,15 @@ wasm/target/
 backend/test_drm.db
 backend/test_output.txt
 *.db
+.coverage
+.coverage.*
+htmlcov/
+
+# Claude Code project state (machine-local)
+.claude/
+
+# Broken pip redirect artifacts (=x.y.z files created by shell misquoting)
+=*
 
 # TypeScript incremental build info
 frontend/tsconfig.tsbuildinfo

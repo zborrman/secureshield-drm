@@ -63,7 +63,7 @@ from config import (
 )
 from dependencies import _admin_session_secret
 from sqlalchemy import text
-from rate_limit import limiter, ADMIN_WRITE_LIMIT
+from rate_limit import limiter, ADMIN_WRITE_LIMIT, LOGIN_LIMIT
 
 router = APIRouter()
 
@@ -71,7 +71,9 @@ router = APIRouter()
 # ── Admin login (issues short-lived session JWT) ───────────────────────────────
 
 @router.post("/admin/login")
+@limiter.limit(LOGIN_LIMIT)
 async def admin_login(
+    request:   Request,
     api_key:   str = Query(...),
     totp_code: str = Query(default=""),
 ):

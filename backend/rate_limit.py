@@ -32,3 +32,4 @@ ANALYTICS_LIMIT     = _limit("60/minute")
 ADMIN_WRITE_LIMIT   = _limit("200/minute")
 SUPERADMIN_LIMIT    = _limit("30/minute")
 TENANT_WRITE_LIMIT  = _limit("100/minute")
+LOGIN_LIMIT         = _limit("5/minute")   # brute-force protection on admin login

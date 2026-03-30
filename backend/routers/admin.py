@@ -49,6 +49,7 @@ import redis_service
 import anomaly_service
 import stripe_service
 import email_service
+import queue_service
 import bulk_import
 import llm_council_service
 from schemas import LicenseCreatedResponse, OfflineTokenIssued, AnomalyResponse, BulkImportResponse
@@ -207,7 +208,7 @@ async def create_license(
     db.add(new_license)
     await db.commit()
     if owner_email:
-        await email_service.send_license_key(owner_email, invoice_id, plain_key)
+        await queue_service.enqueue_email(owner_email, invoice_id, plain_key)
     return {
         "invoice_id": invoice_id,
         "plain_key_to_copy": plain_key,

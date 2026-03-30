@@ -83,6 +83,31 @@ services:
     ports:
       - "3000:3000"
 
+  # ── ARQ background worker — processes email and geo-webhook jobs ─────────────
+  # Shares the same Redis broker as the API.  Scale by increasing replicas.
+  worker:
+    build:
+      context: ./backend
+    container_name: secureshield_worker
+    command: ["arq", "worker.WorkerSettings"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - EMAIL_ENABLED=${EMAIL_ENABLED:-false}
+      - SMTP_HOST=${SMTP_HOST:-localhost}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASS=${SMTP_PASS:-}
+      - SMTP_FROM=${SMTP_FROM:-noreply@secureshield.local}
+      - GEO_WEBHOOK_URL=${GEO_WEBHOOK_URL:-}
+    volumes:
+      - ./backend:/app
+    restart: unless-stopped
+
   prometheus:
     image: prom/prometheus:v2.49.1
     container_name: secureshield_prometheus

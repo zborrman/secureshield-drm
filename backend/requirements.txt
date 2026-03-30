@@ -27,3 +27,4 @@ opentelemetry-instrumentation-fastapi>=0.44b0
 opentelemetry-exporter-otlp-proto-grpc>=1.22.0
 pyyaml>=6.0
 pyotp>=2.9.0
+arq>=0.25.0

@@ -25,6 +25,7 @@ from watermark_service import generate_user_fingerprint
 import stripe_service
 import models
 import geo_service
+import queue_service
 import redis_service
 from config import (
     BRUTE_FORCE_WINDOW_MINUTES,
@@ -113,7 +114,7 @@ async def verify(
                 db, invoice_id, client_ip, False,
                 f"GEO_BLOCKED:{country} | {user_agent}",
             )
-            await geo_service.fire_geo_block_webhook(GEO_WEBHOOK_URL, invoice_id, country, client_ip)
+            await queue_service.enqueue_geo_webhook(invoice_id, country, client_ip)
             raise HTTPException(
                 status_code=403,
                 detail=f"Access denied: your region ({country}) is not permitted for this license",
@@ -282,9 +283,7 @@ async def analytics_start(
     if license_record.allowed_countries:
         country = await geo_service.get_country_code(request.client.host)
         if not geo_service.is_permitted(country, license_record.allowed_countries):
-            await geo_service.fire_geo_block_webhook(
-                GEO_WEBHOOK_URL, invoice_id, country, request.client.host
-            )
+            await queue_service.enqueue_geo_webhook(invoice_id, country, request.client.host)
             raise HTTPException(
                 status_code=403,
                 detail=f"Region not permitted: {country}",

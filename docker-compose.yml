@@ -52,6 +52,10 @@ services:
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
       - OTEL_ENABLED=${OTEL_ENABLED:-false}
       - OTEL_ENDPOINT=${OTEL_ENDPOINT:-http://jaeger:4317}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
+      - NIM_BASE_URL=${NIM_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      - CHAIRMAN_MODEL=${CHAIRMAN_MODEL:-nim/nvidia/llama-3.3-nemotron-super-49b-v1}
     volumes:
       - ./backend:/app
     ports:

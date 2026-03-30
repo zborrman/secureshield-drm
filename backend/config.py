@@ -98,12 +98,21 @@ CORS_ORIGINS: list[str] = [
 ]
 
 # ── LLM Council (AI anomaly enrichment — optional) ────────────────────────────
-# OpenRouter API key: https://openrouter.ai  — leave empty to disable the feature.
-# When empty, GET /admin/anomalies/enriched returns 503 with a clear message.
+# OpenRouter API key: https://openrouter.ai
+# Required for any council model that does NOT use the nim/ prefix.
+# Leave empty if all models are NVIDIA NIM (nim/ prefix).
 OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
 
+# NVIDIA NIM API key: https://build.nvidia.com → API Keys
+# Required for any council model that uses the nim/ prefix (including the default chairman).
+# Leave empty if all models are OpenRouter (no nim/ prefix).
+NVIDIA_API_KEY: str = os.getenv("NVIDIA_API_KEY", "")
+
+# NVIDIA NIM base URL — override to point at a self-hosted NIM deployment.
+NIM_BASE_URL: str = os.getenv("NIM_BASE_URL", "https://integrate.api.nvidia.com/v1")
+
 # Council member models queried in parallel during Stage 1 and Stage 2.
-# Any OpenRouter-compatible model ID is accepted.
+# Models prefixed with nim/ are routed to NVIDIA NIM; all others go through OpenRouter.
 import json as _json
 COUNCIL_MODELS: list[str] = _json.loads(
     os.getenv(
@@ -113,7 +122,9 @@ COUNCIL_MODELS: list[str] = _json.loads(
 )
 
 # Chairman model that synthesizes the council deliberation into a final verdict.
-CHAIRMAN_MODEL: str = os.getenv("CHAIRMAN_MODEL", "anthropic/claude-sonnet-4-6")
+# Defaults to NVIDIA Nemotron Super — the highest-reasoning model on NIM.
+# Requires NVIDIA_API_KEY when using the nim/ prefix.
+CHAIRMAN_MODEL: str = os.getenv("CHAIRMAN_MODEL", "nim/nvidia/llama-3.3-nemotron-super-49b-v1")
 
 # How long (seconds) to cache a council verdict in Redis before re-running.
 COUNCIL_CACHE_TTL: int = int(os.getenv("COUNCIL_CACHE_TTL", "1800"))  # default 30 min

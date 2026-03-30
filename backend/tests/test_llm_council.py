@@ -1,16 +1,19 @@
 """
 LLM Council integration tests — AI enrichment over anomaly detectors.
 
-All OpenRouter HTTP calls are intercepted with unittest.mock so no real
-API key or network access is required.  The tests verify:
+All OpenRouter / NVIDIA NIM HTTP calls are intercepted with unittest.mock so
+no real API key or network access is required.  The tests verify:
 
   1. run_council() returns enriched finding with council_verdict
   2. Original finding fields are preserved unchanged
   3. Each council model is listed in models_used
-  4. Missing OPENROUTER_API_KEY raises RuntimeError
-  5. GET /admin/anomalies/enriched → 200 with mocked council
-  6. Results are cached in Redis on second call
-  7. Endpoint requires admin authentication (401 without key)
+  4. Missing OPENROUTER_API_KEY raises RuntimeError for non-nim council models
+  5. Missing NVIDIA_API_KEY raises RuntimeError when chairman uses nim/ prefix
+  6. nim/ prefixed models are routed to NIM_BASE_URL, not OpenRouter
+  7. GET /admin/anomalies/enriched → 200 with mocked council
+  8. Results are cached in Redis on second call
+  9. Endpoint requires admin authentication (401 without key)
+ 10. Endpoint returns 503 when required API keys are missing
 """
 
 from __future__ import annotations
@@ -104,6 +107,7 @@ def _make_post_side_effect(n_models: int = 3):
 async def test_run_council_returns_verdict():
     """run_council() must return the original finding extended with council_verdict."""
     os.environ["OPENROUTER_API_KEY"] = "test-key"
+    os.environ["NVIDIA_API_KEY"] = "test-nvapi-key"
 
     import importlib
     import config
@@ -127,6 +131,7 @@ async def test_run_council_returns_verdict():
 async def test_run_council_preserves_original_fields():
     """All fields from the original finding must be present in the returned dict."""
     os.environ["OPENROUTER_API_KEY"] = "test-key"
+    os.environ["NVIDIA_API_KEY"] = "test-nvapi-key"
 
     import importlib
     import config
@@ -143,8 +148,9 @@ async def test_run_council_preserves_original_fields():
 
 @pytest.mark.asyncio
 async def test_run_council_lists_models_used():
-    """council_verdict must list which models participated."""
+    """council_verdict must list which models participated and name the chairman."""
     os.environ["OPENROUTER_API_KEY"] = "test-key"
+    os.environ["NVIDIA_API_KEY"] = "test-nvapi-key"
 
     import importlib
     import config
@@ -160,12 +166,15 @@ async def test_run_council_lists_models_used():
     assert isinstance(v["models_used"], list)
     assert len(v["models_used"]) == len(config.COUNCIL_MODELS)
     assert "chairman" in v
+    # Default chairman must be Nemotron Super
+    assert "nemotron" in v["chairman"].lower()
 
 
 @pytest.mark.asyncio
-async def test_run_council_raises_without_api_key(monkeypatch):
-    """run_council() must raise RuntimeError when OPENROUTER_API_KEY is not set."""
+async def test_run_council_raises_without_openrouter_key(monkeypatch):
+    """run_council() must raise RuntimeError when non-nim council models need OPENROUTER_API_KEY."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    monkeypatch.setenv("NVIDIA_API_KEY", "test-nvapi-key")
 
     import importlib
     import config as _cfg
@@ -177,24 +186,80 @@ async def test_run_council_raises_without_api_key(monkeypatch):
         await _svc.run_council(_SAMPLE_FINDING)
 
 
+@pytest.mark.asyncio
+async def test_run_council_raises_without_nvidia_key(monkeypatch):
+    """run_council() must raise RuntimeError when nim/ chairman needs NVIDIA_API_KEY."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("NVIDIA_API_KEY", "")
+    # Force chairman to a nim/ model
+    monkeypatch.setenv("CHAIRMAN_MODEL", "nim/nvidia/llama-3.3-nemotron-super-49b-v1")
+
+    import importlib
+    import config as _cfg
+    importlib.reload(_cfg)
+    import llm_council_service as _svc
+    importlib.reload(_svc)
+
+    with pytest.raises(RuntimeError, match="NVIDIA_API_KEY"):
+        await _svc.run_council(_SAMPLE_FINDING)
+
+
+@pytest.mark.asyncio
+async def test_nim_model_routes_to_nim_base_url(monkeypatch):
+    """nim/ prefixed models must be sent to NIM_BASE_URL, not OpenRouter."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("NVIDIA_API_KEY", "test-nvapi-key")
+    monkeypatch.setenv("NIM_BASE_URL", "https://integrate.api.nvidia.com/v1")
+    monkeypatch.setenv("CHAIRMAN_MODEL", "nim/nvidia/llama-3.3-nemotron-super-49b-v1")
+
+    import importlib
+    import config as _cfg
+    importlib.reload(_cfg)
+    import llm_council_service as _svc
+    importlib.reload(_svc)
+
+    nim_calls: list[str] = []
+    openrouter_calls: list[str] = []
+
+    async def _spy_post(url, *args, **kwargs):
+        if "nvidia.com" in url:
+            nim_calls.append(url)
+        else:
+            openrouter_calls.append(url)
+        # Determine stage from call order
+        total = len(nim_calls) + len(openrouter_calls)
+        n_models = len(_cfg.COUNCIL_MODELS)
+        if total <= n_models * 2:
+            return _http_response(_MOCK_S1 if total <= n_models else _MOCK_S2)
+        return _http_response(_MOCK_S3)
+
+    with patch("httpx.AsyncClient.post", side_effect=_spy_post):
+        await _svc.run_council(_SAMPLE_FINDING)
+
+    # Chairman (Nemotron) call must have gone to NIM
+    assert len(nim_calls) >= 1, "Expected at least one call to NVIDIA NIM URL"
+    # Council members (OpenRouter models) must have gone to OpenRouter
+    assert len(openrouter_calls) >= 1, "Expected at least one call to OpenRouter URL"
+
+
 # ─── Integration tests for GET /admin/anomalies/enriched ──────────────────────
 
 @pytest.mark.asyncio
 async def test_enriched_endpoint_returns_200(client, db_session, monkeypatch):
     """
     GET /admin/anomalies/enriched should return 200 with enriched_findings
-    when OPENROUTER_API_KEY is set and run_council is mocked.
+    when OPENROUTER_API_KEY + NVIDIA_API_KEY are set and run_council is mocked.
     """
     async def _mock_run_council(finding):
         return {**finding, "council_verdict": _MOCK_S3}
 
-    # Patch the module-level attribute so the endpoint sees a non-empty key.
     with patch("config.OPENROUTER_API_KEY", "test-key"):
-        with patch("llm_council_service.run_council", side_effect=_mock_run_council):
-            resp = await client.get(
-                "/admin/anomalies/enriched?hours=24&min_score=0&limit=5",
-                headers={"X-Admin-Key": _ADMIN_KEY},
-            )
+        with patch("config.NVIDIA_API_KEY", "test-nvapi-key"):
+            with patch("llm_council_service.run_council", side_effect=_mock_run_council):
+                resp = await client.get(
+                    "/admin/anomalies/enriched?hours=24&min_score=0&limit=5",
+                    headers={"X-Admin-Key": _ADMIN_KEY},
+                )
 
     assert resp.status_code == 200
     data = resp.json()
@@ -217,20 +282,18 @@ async def test_enriched_endpoint_caches_results(client, db_session, monkeypatch)
         return {**finding, "council_verdict": _MOCK_S3}
 
     with patch("config.OPENROUTER_API_KEY", "test-key"):
-        with patch("llm_council_service.run_council", side_effect=_mock_run_council):
-            await client.get(
-                "/admin/anomalies/enriched?hours=24&min_score=0&limit=5",
-                headers={"X-Admin-Key": _ADMIN_KEY},
-            )
-            first_count = call_count[0]
-            # Second request — same data, same anomaly_ids → should hit cache
-            await client.get(
-                "/admin/anomalies/enriched?hours=24&min_score=0&limit=5",
-                headers={"X-Admin-Key": _ADMIN_KEY},
-            )
+        with patch("config.NVIDIA_API_KEY", "test-nvapi-key"):
+            with patch("llm_council_service.run_council", side_effect=_mock_run_council):
+                await client.get(
+                    "/admin/anomalies/enriched?hours=24&min_score=0&limit=5",
+                    headers={"X-Admin-Key": _ADMIN_KEY},
+                )
+                first_count = call_count[0]
+                await client.get(
+                    "/admin/anomalies/enriched?hours=24&min_score=0&limit=5",
+                    headers={"X-Admin-Key": _ADMIN_KEY},
+                )
 
-    # If the DB has no data there are 0 findings → 0 calls both times; that's fine.
-    # The invariant: second call must not add MORE calls than the first.
     second_new_calls = call_count[0] - first_count
     assert second_new_calls <= first_count, (
         f"Expected second call to use cache (≤{first_count} new calls), "
@@ -246,12 +309,29 @@ async def test_enriched_endpoint_requires_auth(client, db_session):
 
 
 @pytest.mark.asyncio
-async def test_enriched_endpoint_503_without_api_key(client, db_session):
-    """GET /admin/anomalies/enriched returns 503 when OPENROUTER_API_KEY is empty."""
+async def test_enriched_endpoint_503_without_nvidia_key(client, db_session):
+    """GET /admin/anomalies/enriched returns 503 when NVIDIA_API_KEY is missing for nim/ chairman."""
+    with patch("config.OPENROUTER_API_KEY", "test-key"):
+        with patch("config.NVIDIA_API_KEY", ""):
+            with patch(
+                "config.CHAIRMAN_MODEL", "nim/nvidia/llama-3.3-nemotron-super-49b-v1"
+            ):
+                resp = await client.get(
+                    "/admin/anomalies/enriched",
+                    headers={"X-Admin-Key": _ADMIN_KEY},
+                )
+    assert resp.status_code == 503
+    assert "NVIDIA_API_KEY" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_enriched_endpoint_503_without_openrouter_key(client, db_session):
+    """GET /admin/anomalies/enriched returns 503 when OPENROUTER_API_KEY is missing for non-nim council."""
     with patch("config.OPENROUTER_API_KEY", ""):
-        resp = await client.get(
-            "/admin/anomalies/enriched",
-            headers={"X-Admin-Key": _ADMIN_KEY},
-        )
+        with patch("config.NVIDIA_API_KEY", "test-nvapi-key"):
+            resp = await client.get(
+                "/admin/anomalies/enriched",
+                headers={"X-Admin-Key": _ADMIN_KEY},
+            )
     assert resp.status_code == 503
     assert "OPENROUTER_API_KEY" in resp.json()["detail"]

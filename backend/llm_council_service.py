@@ -33,6 +33,26 @@ import config
 
 _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+# ─── NVIDIA NIM helpers ────────────────────────────────────────────────────────
+
+def _nim_headers() -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {config.NVIDIA_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+
+def _resolve_model(model: str) -> tuple[str, str, dict[str, str]]:
+    """Return (url, actual_model_name, headers) for the given model ID.
+
+    Models prefixed with ``nim/`` are routed to NVIDIA NIM
+    (``config.NIM_BASE_URL``).  All other models go through OpenRouter.
+    """
+    if model.startswith("nim/"):
+        url = config.NIM_BASE_URL.rstrip("/") + "/chat/completions"
+        return url, model[4:], _nim_headers()   # strip "nim/" prefix
+    return _OPENROUTER_URL, model, _build_headers()
+
 # ─── Stage 1 prompt ────────────────────────────────────────────────────────────
 
 _S1_SYSTEM = """\
@@ -123,13 +143,14 @@ async def _query_model(
     system: str,
     user: str,
 ) -> dict[str, Any] | None:
-    """Call a single OpenRouter model; return parsed JSON or None on failure."""
+    """Call a single model (OpenRouter or NVIDIA NIM); return parsed JSON or None on failure."""
+    url, actual_model, headers = _resolve_model(model)
     try:
         resp = await client.post(
-            _OPENROUTER_URL,
-            headers=_build_headers(),
+            url,
+            headers=headers,
             json={
-                "model": model,
+                "model": actual_model,
                 "messages": [
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
@@ -175,10 +196,18 @@ async def run_council(finding: dict[str, Any]) -> dict[str, Any]:
         RuntimeError: If OPENROUTER_API_KEY is not configured.
         RuntimeError: If all council models fail in Stage 1.
     """
-    if not config.OPENROUTER_API_KEY:
+    all_models = config.COUNCIL_MODELS + [config.CHAIRMAN_MODEL]
+    needs_openrouter = any(not m.startswith("nim/") for m in all_models)
+    needs_nvidia     = any(m.startswith("nim/") for m in all_models)
+    missing = []
+    if needs_openrouter and not config.OPENROUTER_API_KEY:
+        missing.append("OPENROUTER_API_KEY")
+    if needs_nvidia and not config.NVIDIA_API_KEY:
+        missing.append("NVIDIA_API_KEY")
+    if missing:
         raise RuntimeError(
-            "OPENROUTER_API_KEY is not configured. "
-            "Set it in your environment to enable AI anomaly enrichment."
+            f"{', '.join(missing)} is not configured. "
+            "Set the missing environment variable(s) to enable AI anomaly enrichment."
         )
 
     anomaly_summary = (

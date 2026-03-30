@@ -947,12 +947,20 @@ async def get_enriched_anomalies(
     """
     import config as _config
 
-    if not _config.OPENROUTER_API_KEY:
+    all_models = _config.COUNCIL_MODELS + [_config.CHAIRMAN_MODEL]
+    _needs_openrouter = any(not m.startswith("nim/") for m in all_models)
+    _needs_nvidia     = any(m.startswith("nim/") for m in all_models)
+    _missing_keys = []
+    if _needs_openrouter and not _config.OPENROUTER_API_KEY:
+        _missing_keys.append("OPENROUTER_API_KEY")
+    if _needs_nvidia and not _config.NVIDIA_API_KEY:
+        _missing_keys.append("NVIDIA_API_KEY")
+    if _missing_keys:
         raise HTTPException(
             status_code=503,
             detail=(
-                "AI enrichment is not configured. "
-                "Set OPENROUTER_API_KEY to enable this endpoint."
+                f"AI enrichment is not configured. "
+                f"Set {', '.join(_missing_keys)} to enable this endpoint."
             ),
         )
 

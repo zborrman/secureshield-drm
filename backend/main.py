@@ -29,7 +29,7 @@ setup_logging()
 logger = get_logger(__name__)
 
 # ── Routers ───────────────────────────────────────────────────────────────────
-from routers import auth, admin, vault, superadmin, tenant
+from routers import auth, admin, vault, superadmin, tenant, provisioning
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
@@ -148,6 +148,7 @@ app.include_router(admin.router)
 app.include_router(vault.router)
 app.include_router(superadmin.router)
 app.include_router(tenant.router)
+app.include_router(provisioning.router)
 
 # ── Prometheus metrics ─────────────────────────────────────────────────────────
 # Exposes GET /metrics in Prometheus text format.
